@@ -58,10 +58,13 @@ push sur master ──► GitHub Actions ──► ghcr.io/calaxo/blocksdr:lates
 chaque déploiement). Pas de redéploiement automatique sur push — c'est la
 convention du homelab.
 
-⚠️ **Un dongle = un programme.** En production, blocksdr tourne sur sa **source
-simulée** : il ne touche pas au RTL-SDR et cohabite donc avec le stack
-`openwebrx`, qui lui tient le dongle en permanence. Pour lui donner le vrai
-signal, il faudra **arrêter openwebrx** d'abord.
+⚠️ **Un dongle = un programme** — mais la nuance compte : **openwebrx ne tient le
+dongle que pendant qu'un auditeur est connecté** (il démarre sa source à la
+demande et l'arrête avec le dernier client). Les deux stacks peuvent donc
+cohabiter ; c'est **premier arrivé, premier servi** au moment de l'écoute.
+Vérifié le 2026-08-24 : blocksdr a ouvert le dongle sans rien arrêter, parce que
+personne n'écoutait sur openwebrx. Si les deux le veulent en même temps, le
+second échoue avec « déjà pris par un autre programme ».
 
 ## Ce qu'on voit à l'écran
 

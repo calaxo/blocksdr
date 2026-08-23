@@ -85,6 +85,9 @@ WINDOWS = {
 }
 
 
+MAX_SEGMENTS = 8
+
+
 def spectrum_db(x: np.ndarray, size: int, window: str = "hann") -> np.ndarray:
     """Spectre moyenné en dB, prêt à afficher.
 
@@ -99,7 +102,12 @@ def spectrum_db(x: np.ndarray, size: int, window: str = "hann") -> np.ndarray:
     size = int(size)
     if len(x) < size:
         x = np.pad(x, (0, size - len(x)))
-    nseg = max(1, len(x) // size)
+    # ⚠️ On BORNE le nombre de segments moyennés. Mesuré sur le vrai dongle à
+    # 2,4 MS/s avec des blocs de 65 536 : sans borne, cela fait 32 FFT par tour,
+    # soit ~1 150 FFT de 2 048 points par seconde — 98 % d'un cœur pour un
+    # affichage qui ne montrera jamais la différence. Huit segments suffisent
+    # largement à calmer le bruit, et divisent le coût par quatre.
+    nseg = max(1, min(MAX_SEGMENTS, len(x) // size))
     win = WINDOWS.get(window, np.hanning)(size).astype(F32)
     # Correction de gain de la fenêtre : sans elle, changer de fenêtre décale
     # tout le niveau affiché de plusieurs dB, et on croit à une panne de gain.
