@@ -21,7 +21,8 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .dsp import C64, F32, Fir, Nco, lowpass_taps, spectrum_db
+from .dsp import (C64, F32, DcBlock, Decimator, Deemphasis, Fir,
+                  FmDiscriminator, Nco, lowpass_taps, spectrum_db)
 
 
 @dataclass
@@ -169,8 +170,10 @@ class RtlSdrSource(Block):
            "refuse de démarrer — c'est voulu, plutôt que de faire semblant.")
     outputs = [{"name": "out", "dtype": "iq"}]
     params = [
-        P("sample_rate", "Cadence d'échantillonnage", "float", 2_048_000.0, unit="éch/s",
-          help="Les deux valeurs sûres du RTL2832U sont 2 048 000 et 2 400 000."),
+        P("sample_rate", "Cadence d'échantillonnage", "float", 2_400_000.0, unit="éch/s",
+          help="⭐ 2 400 000 et pas 2 048 000 : c'est la seule des deux qui se "
+               "divise JUSTE vers 48 kHz (÷50, ou ÷10 puis ÷5). Avec 2 048 000 "
+               "il faudrait un rééchantillonneur à rapport fractionnaire."),
         P("center_freq", "Fréquence centrale", "freq", 100_000_000.0, unit="Hz",
           help="24 MHz à 1 766 MHz. Le dongle se réaccorde immédiatement."),
         P("gain", "Gain", "select", "auto", options=[{"value": "auto", "label": "auto"}] +
@@ -178,7 +181,9 @@ class RtlSdrSource(Block):
         P("ppm", "Correction PPM", "int", 0, min=-100, max=100,
           help="Ce dongle n'a pas de quartz compensé : il dérive. Se cale sur "
                "une station de fréquence connue."),
-        P("block_size", "Taille de bloc", "int", 16384, min=1024, max=262144),
+        P("block_size", "Taille de bloc", "int", 65536, min=1024, max=262144,
+          help="65 536 à 2,4 MS/s = 27 ms par tour, 36 tours/s. Plus petit fait "
+               "tourner la boucle pour rien ; plus grand ajoute de la latence."),
         P("device_index", "Index du périphérique", "int", 0, min=0, max=7),
     ]
 
@@ -298,7 +303,7 @@ class Decimate(Block):
     ]
 
     def setup(self):
-        self.fir = None
+        self.dec = None
         self._key = None
 
     def work(self, ins, ctx):
@@ -309,13 +314,10 @@ class Decimate(Block):
         out_sr = s.sr / f
         key = (s.sr, f, float(self.p["cutoff_ratio"]), int(self.p["ntaps"]))
         if key != self._key:  # reconstruit le filtre si un réglage a bougé
-            self.fir = Fir(lowpass_taps(out_sr * float(self.p["cutoff_ratio"]), s.sr,
-                                        int(self.p["ntaps"])))
+            self.dec = Decimator(out_sr * float(self.p["cutoff_ratio"]), s.sr, f,
+                                 int(self.p["ntaps"]))
             self._key = key
-        y = self.fir(s.data)
-        if f > 1:
-            y = y[::f]
-        return {"out": Signal(y, out_sr, s.fc)}
+        return {"out": Signal(self.dec(s.data), out_sr, s.fc)}
 
 
 @register
@@ -480,3 +482,173 @@ class PowerSink(_Sink):
 
 def catalogue() -> list[dict]:
     return [c.describe() for c in REGISTRY.values()]
+
+# --------------------------------------------------------------------------
+#  Démodulation — du signal radio vers du son
+# --------------------------------------------------------------------------
+
+@register
+class FmDemod(Block):
+    type = "fm_demod"
+    label = "Démodulateur FM"
+    category = "traitement"
+    color = "sky"
+    doc = ("Transforme un flux I/Q en audio. Deux modes : FM LARGE pour la radio "
+           "commerciale (canal de 200 kHz), FM ÉTROITE pour les talkies et les "
+           "relais (12,5 kHz). Sortie à 48 kHz, prête pour la carte son.")
+    inputs = [{"name": "in", "dtype": "iq"}]
+    outputs = [{"name": "out", "dtype": "audio"}]
+    params = [
+        P("mode", "Mode", "select", "wfm", options=[
+            {"value": "wfm", "label": "FM large (radio)"},
+            {"value": "nfm", "label": "FM étroite (talkies)"}]),
+        P("audio_rate", "Cadence audio", "select", 48000, options=[
+            {"value": 48000, "label": "48 000"}, {"value": 32000, "label": "32 000"},
+            {"value": 24000, "label": "24 000"}],
+          help="48 000 si la source est à 2 400 000 : toutes les divisions "
+               "tombent juste. 32 000 va mieux avec 2 048 000."),
+        P("channel_bw", "Largeur de canal", "float", 12500.0, unit="Hz",
+          min=5000, max=50000,
+          help="FM étroite seulement : filtre de canal appliqué AVANT de "
+               "démoduler. Trop large, on entend les canaux voisins."),
+        P("deemphasis", "Désaccentuation", "select", "50",
+          options=[{"value": "50", "label": "50 µs (Europe)"},
+                   {"value": "75", "label": "75 µs (Amérique)"},
+                   {"value": "0", "label": "aucune"}],
+          help="Sans elle, le son est criard et sifflant. C'est le défaut le "
+               "plus reconnaissable d'un démodulateur FM maison."),
+        P("gain", "Volume", "float", 1.0, min=0.0, max=8.0, step=0.1),
+    ]
+
+    def setup(self):
+        self._key = None
+
+    def _chain(self, sr):
+        """(Re)construit la chaîne quand un réglage ou la cadence d'entrée change.
+
+        Deux étages de décimation, jamais un seul : passer de 2,4 MS/s à 48 kHz
+        d'un coup demanderait un filtre à des centaines de coefficients, parce
+        que sa bande de transition serait minuscule devant la cadence d'entrée.
+        En deux temps — grossier puis étroit — chaque filtre reste court.
+        """
+        mode = str(self.p["mode"])
+        ar = float(self.p["audio_rate"])
+        d1 = max(1, int(round(sr / 240_000.0)))      # vers une FI d'environ 240 kHz
+        if1 = sr / d1
+        self.decA = Decimator(min(100_000.0, if1 * 0.45), sr, d1, 63)
+        self.d2 = max(1, int(round(if1 / ar)))
+        self.out_sr = if1 / self.d2
+        self.disc = FmDiscriminator()
+        if mode == "nfm":
+            # Filtre de canal AVANT la démodulation : en FM étroite, tout ce qui
+            # dépasse le canal se retrouverait mélangé dans l'audio.
+            self.decB = Decimator(float(self.p["channel_bw"]) / 2, if1, self.d2, 95)
+            self.decC = None
+        else:
+            # En FM large, on démodule à la FI puis on filtre l'audio à 15 kHz
+            # (la bande utile d'une station) avant de décimer.
+            self.decB = None
+            self.decC = Decimator(15_000.0, if1, self.d2, 63)
+        tau = float(self.p["deemphasis"])
+        self.deemph = Deemphasis(tau * 1e-6, self.out_sr) if tau > 0 else None
+
+    def work(self, ins, ctx):
+        s = ins.get("in")
+        if s is None or len(s.data) == 0:
+            return {}
+        key = (s.sr, self.p["mode"], self.p["audio_rate"], self.p["channel_bw"],
+               self.p["deemphasis"])
+        if key != self._key:
+            self._chain(s.sr)
+            self._key = key
+
+        y = self.decA(s.data)
+        if self.decB is not None:                   # FM étroite
+            a = self.disc(self.decB(y))
+        else:                                       # FM large
+            a = self.decC(self.disc(y))
+        if self.deemph is not None:
+            a = self.deemph(a)
+        a = (a * float(self.p["gain"])).astype(F32)
+        return {"out": Signal(a, self.out_sr, s.fc, kind="audio")}
+
+
+@register
+class AmDemod(Block):
+    type = "am_demod"
+    label = "Démodulateur AM"
+    category = "traitement"
+    color = "sky"
+    doc = ("Pour l'aviation. L'information est dans l'AMPLITUDE : on prend le "
+           "module du signal complexe, on retire la porteuse (une constante), "
+           "et c'est fait.")
+    inputs = [{"name": "in", "dtype": "iq"}]
+    outputs = [{"name": "out", "dtype": "audio"}]
+    params = [
+        P("audio_rate", "Cadence audio", "select", 48000, options=[
+            {"value": 48000, "label": "48 000"}, {"value": 32000, "label": "32 000"}]),
+        P("channel_bw", "Largeur de canal", "float", 8000.0, unit="Hz",
+          min=2000, max=20000,
+          help="Un canal aviation fait environ 8 kHz. Filtré avant démodulation."),
+        P("gain", "Volume", "float", 2.0, min=0.0, max=16.0, step=0.1),
+    ]
+
+    def setup(self):
+        self._key = None
+
+    def _chain(self, sr):
+        ar = float(self.p["audio_rate"])
+        d1 = max(1, int(round(sr / 240_000.0)))
+        if1 = sr / d1
+        self.decA = Decimator(min(100_000.0, if1 * 0.45), sr, d1, 63)
+        self.d2 = max(1, int(round(if1 / ar)))
+        self.out_sr = if1 / self.d2
+        self.decB = Decimator(float(self.p["channel_bw"]) / 2, if1, self.d2, 95)
+        # Coupure très basse : on retire la porteuse sans toucher à la voix.
+        self.dc = DcBlock(20.0, self.out_sr)
+
+    def work(self, ins, ctx):
+        s = ins.get("in")
+        if s is None or len(s.data) == 0:
+            return {}
+        key = (s.sr, self.p["audio_rate"], self.p["channel_bw"])
+        if key != self._key:
+            self._chain(s.sr)
+            self._key = key
+        y = self.decB(self.decA(s.data))
+        a = self.dc(np.abs(y).astype(F32)) * float(self.p["gain"])
+        return {"out": Signal(a.astype(F32), self.out_sr, s.fc, kind="audio")}
+
+
+@register
+class AudioSink(_Sink):
+    type = "audio_sink"
+    label = "Écoute"
+    inputs = [{"name": "in", "dtype": "audio"}]
+    doc = ("Envoie le son au navigateur. Il faut cliquer sur « Écouter » dans le "
+           "panneau : les navigateurs refusent de jouer du son sans un geste de "
+           "l'utilisateur, et ne préviennent pas quand ils bloquent.")
+    params = [
+        P("volume", "Volume", "float", 1.0, min=0.0, max=4.0, step=0.05),
+        P("mute", "Silence", "bool", False),
+    ]
+
+    def setup(self):
+        super().setup()
+
+    def work(self, ins, ctx):
+        s = ins.get("in")
+        if s is None or len(s.data) == 0:
+            return {}
+        # Pas de limitation de cadence ici, contrairement aux afficheurs : une
+        # image de spectre sautée ne se voit pas, un morceau d'audio manquant
+        # s'entend. Tout ce qui est produit doit partir.
+        a = np.zeros_like(s.data) if self.p["mute"] else s.data
+        a = a * float(self.p["volume"])
+        n_clip = int(np.count_nonzero(np.abs(a) > 1.0))
+        pcm = (np.clip(a, -1.0, 1.0) * 32767.0).astype(np.int16)
+        self.seq += 1
+        ctx.emit({"sink": self.id, "kind": "audio", "n": int(len(pcm)),
+                  "sr": s.sr, "fc": s.fc, "seq": self.seq, "clip": n_clip},
+                 pcm.tobytes())
+        return {}

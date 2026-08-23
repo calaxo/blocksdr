@@ -3,6 +3,22 @@
 > Note de conception, écrite **avant** d'écrire le code. L'audio est la partie
 > qui fait échouer la plupart des projets de ce type, et presque jamais pour des
 > raisons de radio.
+>
+> ## ✅ FAIT le 2026-08-24 — et le plan a tenu
+>
+> Blocs **Démodulateur FM** (large/étroite), **Démodulateur AM**, **Écoute**, et
+> l'AudioWorklet à pas fractionnaire décrit au §3. Vérifié de bout en bout sur la
+> source simulée : **220 trames en 6 s, 6,01 s d'audio reçu** — le temps réel est
+> tenu — et le ton démodulé sort à **375 Hz**, exactement la fréquence dont la
+> scène simulée module sa station à −300 kHz. Aucun écrêtage.
+>
+> Deux choses trouvées en écrivant, qui ne sont pas dans le plan :
+> - le **blocage de continu** convergeait des centaines de fois trop lentement
+>   (coefficient par échantillon appliqué à une moyenne par bloc) : la porteuse
+>   AM restait dans le signal et écrasait tout, pic à 37 Hz au lieu du ton ;
+> - la **phase de décimation** n'était pas conservée d'un bloc à l'autre.
+>   Corrigé par principe, mais mesuré : **aucune différence audible** ici
+>   (raies à 36,6 Hz au plancher de bruit dans les deux cas).
 
 ---
 

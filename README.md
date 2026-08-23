@@ -123,6 +123,9 @@ décimation et la démodulation.
 | **Source simulée** | Fabrique un flux I/Q synthétique. 5 scènes : bande FM, deux porteuses, balayage, salves, bruit |
 | **RTL-SDR** | Le vrai dongle (`pyrtlsdr`). Signale proprement son absence au lieu de faire semblant |
 | **Décalage de fréquence** | Fait glisser le spectre pour amener une station au centre |
+| **Démodulateur FM** | I/Q → son. FM large (radio) ou étroite (talkies), avec désaccentuation |
+| **Démodulateur AM** | Pour l'aviation |
+| **Écoute** | Envoie le son au navigateur |
 | **Décimation** | Filtre puis jette des échantillons — voir ci-dessous |
 | **FFT** | Du temps vers la fréquence. Fenêtrage + moyennage de Welch |
 | **Spectre / Waterfall / Oscilloscope / Puissance** | Les afficheurs |
@@ -179,10 +182,11 @@ devient 8 fois plus étroit — on a échangé de la largeur de bande contre du 
       dans `docker-compose.yml`, échanger le bloc source. Le reste ne bouge pas
 - [ ] Sauvegarde / chargement de graphes (`.json`), et quelques exemples fournis
 - [ ] Clic sur le waterfall pour poser le décalage de fréquence
-- [ ] **Audio** : démodulation WFM/NFM/AM. ⚠️ Le vrai morceau n'est pas la
-      démodulation (quelques lignes) mais la **dérive d'horloge** entre le quartz
-      du dongle et celui de la carte son. Contraintes, arithmétique des cadences
-      et plan de construction : **[`docs/audio.md`](docs/audio.md)**
+- [x] ⭐ **Audio** : démodulateurs **FM large / FM étroite / AM**, bloc **Écoute**,
+      et côté navigateur un **AudioWorklet à pas fractionnaire asservi** qui
+      absorbe la dérive d'horloge *et* un `AudioContext` à 44 100.
+      Contraintes et choix : **[`docs/audio.md`](docs/audio.md)**
+- [ ] Stéréo FM (pilote 19 kHz), RDS, Opus pour l'écoute à distance
 - [ ] Décodeurs (ADS-B, capteurs 433/868) en blocs
 
 Étude de faisabilité et comparaison avec l'existant :

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useApp } from '@/store'
 import { paletteOf } from '@/lib/palettes'
+import { creerLecteur } from '@/lib/audio'
 
 // Les afficheurs. Règle de fond : AUCUNE trame ne passe par l’état React.
 // Chaque vue s-abonne au bus, garde la dernière trame dans une ref, et dessine
@@ -236,7 +237,92 @@ function PowerView({ id, label }) {
   )
 }
 
+
+// --------------------------------------------------------------------- audio --
+function AudioView({ id, label }) {
+  const { bus } = useApp()
+  const lecteur = useRef(null)
+  const [enMarche, setEnMarche] = useState(false)
+  const [volume, setVolume] = useState(0.8)
+  const [etat, setEtat] = useState(null)
+  const [clip, setClip] = useState(0)
+
+  if (!lecteur.current) lecteur.current = creerLecteur()
+
+  useEffect(() => {
+    const off = lecteur.current.onEtat(setEtat)
+    return () => { off(); lecteur.current?.arreter() }
+  }, [])
+
+  useEffect(() => bus.on(id, (h, bytes) => {
+    if (h.clip) setClip((c) => c + h.clip)
+    lecteur.current.pousser(bytes, h.sr)
+  }), [bus, id])
+
+  const basculer = async () => {
+    if (enMarche) { await lecteur.current.arreter(); setEnMarche(false); return }
+    // ⚠️ DOIT être appelé depuis le gestionnaire du clic : sinon le navigateur
+    // laisse le contexte suspendu et rien ne sort, sans erreur.
+    const ok = await lecteur.current.demarrer()
+    lecteur.current.setVolume(volume)
+    setEnMarche(ok)
+  }
+
+  const remplissage = etat?.remplissage_ms ?? 0
+  const cible = 250
+  return (
+    <Frame title={label}
+           subtitle={etat ? `${etat.srcRate} Hz → ${etat.ctxRate} Hz` : 'audio'}
+           right={etat ? `${etat.correction_ppm > 0 ? '+' : ''}${etat.correction_ppm} ppm` : ''}>
+      <div className="absolute inset-0 flex flex-col gap-3 p-4">
+        <button onClick={basculer}
+                className={`btn justify-center ${enMarche ? 'btn-danger' : 'btn-primary'}`}>
+          {enMarche ? 'Couper le son' : 'Écouter'}
+        </button>
+
+        <div>
+          <div className="flex justify-between text-[10px] text-mut mb-1">
+            <span>Volume</span><span>{Math.round(volume * 100)} %</span>
+          </div>
+          <input type="range" min="0" max="1" step="0.01" value={volume}
+                 className="w-full accent-accent"
+                 onChange={(e) => { const v = Number(e.target.value); setVolume(v); lecteur.current.setVolume(v) }} />
+        </div>
+
+        <div>
+          <div className="flex justify-between text-[10px] text-mut mb-1">
+            <span>Tampon</span>
+            <span className="font-mono">{remplissage} ms <span className="opacity-60">/ {cible}</span></span>
+          </div>
+          {/* Le tampon doit rester autour de la cible. Il descend = ça va craquer ;
+              il monte = la latence enfle. C'est ce que l'asservissement corrige. */}
+          <div className="h-2 rounded-full bg-card2 border border-line overflow-hidden relative">
+            <div className={`h-full transition-[width] duration-300 ${remplissage < cible * 0.4 ? 'bg-bad' : remplissage > cible * 2 ? 'bg-warn' : 'bg-good'}`}
+                 style={{ width: `${Math.min(100, (remplissage / (cible * 2)) * 100)}%` }} />
+            <div className="absolute inset-y-0 w-px bg-ink/40" style={{ left: '50%' }} />
+          </div>
+        </div>
+
+        <div className="mt-auto grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-mut font-mono">
+          <span>sous-alimentations</span>
+          <span className={etat?.sousAlim ? 'text-warn text-right' : 'text-right'}>{etat?.sousAlim ?? 0}</span>
+          <span>écrêtage</span>
+          <span className={clip ? 'text-warn text-right' : 'text-right'}>{clip}</span>
+        </div>
+
+        {!enMarche && (
+          <p className="text-[10px] text-mut/80 leading-snug">
+            Les navigateurs refusent de jouer du son sans un clic. C'est la première
+            cause de « ça ne marche pas ».
+          </p>
+        )}
+      </div>
+    </Frame>
+  )
+}
+
 const VIEWS = {
+  audio_sink: AudioView,
   spectrum_sink: SpectrumView,
   waterfall_sink: WaterfallView,
   scope_sink: ScopeView,

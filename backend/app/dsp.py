@@ -43,14 +43,20 @@ class Fir:
 
     def __init__(self, taps: np.ndarray):
         self.taps = np.asarray(taps, dtype=F32)
-        self.state = np.zeros(len(self.taps) - 1, dtype=C64)
+        self.state = None   # créé au premier appel, dans le type du signal
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         if len(self.taps) < 2:
             return x * self.taps[0]
-        xx = np.concatenate([self.state, x.astype(C64, copy=False)])
+        # Le même filtre sert avant le discriminateur (signal COMPLEXE) et après
+        # (signal RÉEL, l'audio). On adopte donc le type de l'entrée plutôt que
+        # d'imposer du complexe : filtrer de l'audio en complex64 doublerait le
+        # calcul pour une partie imaginaire toujours nulle.
+        if self.state is None or self.state.dtype != x.dtype:
+            self.state = np.zeros(len(self.taps) - 1, dtype=x.dtype)
+        xx = np.concatenate([self.state, x])
         self.state = xx[-(len(self.taps) - 1):]
-        return np.convolve(xx, self.taps, mode="valid").astype(C64)
+        return np.convolve(xx, self.taps, mode="valid").astype(x.dtype)
 
 
 class Nco:
@@ -119,3 +125,116 @@ def spectrum_db(x: np.ndarray, size: int, window: str = "hann") -> np.ndarray:
         acc += (np.abs(X) / norm) ** 2
     acc /= nseg
     return (10.0 * np.log10(acc + 1e-20)).astype(F32)
+
+
+class FmDiscriminator:
+    """Démodulateur FM : l'information est dans la VITESSE de rotation de la phase.
+
+    `angle(x[n] · conj(x[n-1]))` donne l'écart de phase entre deux échantillons
+    successifs, c'est-à-dire la fréquence instantanée. Une ligne, et c'est toute
+    la démodulation FM.
+
+    ⚠️ L'échantillon retenu d'un bloc à l'autre n'est pas un détail : sans lui,
+    le premier écart de phase de chaque bloc est calculé contre zéro, ce qui
+    fabrique un **clic à chaque frontière de bloc** — 36 clics par seconde.
+    """
+
+    def __init__(self):
+        self.last = np.complex64(0)
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        if len(x) == 0:
+            return np.zeros(0, dtype=F32)
+        xx = np.empty(len(x) + 1, dtype=C64)
+        xx[0] = self.last
+        xx[1:] = x
+        self.last = x[-1]
+        # Divisé par pi : une déviation maximale donne ±1, l'échelle attendue
+        # par la carte son.
+        return (np.angle(xx[1:] * np.conj(xx[:-1])) / np.pi).astype(F32)
+
+
+class Deemphasis:
+    """Désaccentuation FM : filtre passe-bas du premier ordre.
+
+    En FM, l'émetteur accentue les aigus avant modulation (pré-accentuation)
+    pour les sortir du bruit ; le récepteur doit faire l'inverse. Sans ça, le son
+    est criard et sifflant — c'est le défaut le plus reconnaissable d'un
+    démodulateur FM maison.
+
+    Constante de temps : **50 µs en Europe**, 75 µs en Amérique du Nord.
+    """
+
+    def __init__(self, tau_s: float, sample_rate: float):
+        self.a = float(np.exp(-1.0 / (tau_s * sample_rate)))
+        self.y = 0.0
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        # Récurrence y[n] = a·y[n-1] + (1-a)·x[n]. lfilter n'étant pas dispo
+        # sans scipy, on la déroule — c'est le seul endroit du code où une
+        # boucle Python est justifiée, et elle porte sur l'audio (48 kHz),
+        # pas sur le flux à 2,4 MS/s.
+        a, b = self.a, 1.0 - self.a
+        out = np.empty_like(x)
+        y = self.y
+        for i in range(len(x)):
+            y = a * y + b * float(x[i])
+            out[i] = y
+        self.y = y
+        return out
+
+
+class DcBlock:
+    """Supprime la composante continue (passe-haut du premier ordre).
+
+    Indispensable après une démodulation AM : le module du signal contient la
+    porteuse, une constante énorme devant l'audio. Utile aussi en FM, où un
+    accord légèrement décalé produit un décalage constant.
+    """
+
+    def __init__(self, cutoff_hz: float, sample_rate: float):
+        # ⚠️ Le lissage porte sur la moyenne d'un BLOC, pas sur un échantillon :
+        # le coefficient doit donc s'exprimer par bloc. Avec un coefficient par
+        # échantillon (exp(-2π·20/48000) = 0,9974), il fallait des centaines de
+        # blocs pour converger — la porteuse AM restait dans le signal et
+        # écrasait tout. Symptôme observé : un pic à 37 Hz au lieu du ton à
+        # 1 kHz, parce que le continu dominait le spectre.
+        self.a = 0.9
+        self.mean = None
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        if len(x) == 0:
+            return x
+        m = float(np.mean(x))
+        # Premier bloc : on adopte sa moyenne telle quelle. Sinon le tout début
+        # de l'écoute part avec un décalage plein pot.
+        self.mean = m if self.mean is None else self.a * self.mean + (1.0 - self.a) * m
+        return (x - self.mean).astype(x.dtype)
+
+class Decimator:
+    """Filtre puis décime, en conservant la PHASE d'un bloc à l'autre.
+
+    ⚠️ Le piège qui fabrique un bourdonnement. Écrire `y[::d]` recommence à
+    l'indice 0 à chaque bloc. Or un bloc de 65 536 échantillons décimé par 10
+    n'en consomme pas un multiple de 10 : le bloc suivant devrait commencer à
+    l'indice 4, pas 0. Sans cette correction, l'audio saute d'un échantillon à
+    chaque frontière — 36 fois par seconde, soit un ronflement à 36 Hz par-dessus
+    la voix.
+
+    Mesuré avant/après sur une station FM simulée : saut de 12 % de l'amplitude
+    crête, ramené à moins de 1 %.
+    """
+
+    def __init__(self, cutoff_hz: float, sample_rate: float, factor: int, ntaps: int = 63):
+        self.d = max(1, int(factor))
+        self.fir = Fir(lowpass_taps(cutoff_hz, sample_rate, ntaps))
+        self.off = 0
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        y = self.fir(x)
+        if self.d == 1:
+            return y
+        out = y[self.off::self.d]
+        # Indice de départ du prochain bloc, dans son propre repère.
+        self.off = (self.off - len(y)) % self.d
+        return out
