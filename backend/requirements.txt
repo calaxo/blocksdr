@@ -10,4 +10,9 @@ pyrtlsdr==0.3.0
 # pip ne l'installe plus implicitement. Sans cette ligne, l'import échoue sur
 # « No module named 'pkg_resources' » — un message qui ne parle pas du tout du
 # vrai problème.
-setuptools>=70
+#
+# ⚠️⚠️ ET IL FAUT LE BORNER SOUS LA 81 : `pkg_resources` a été RETIRÉ de
+# setuptools à partir de la version 81. Un simple « setuptools>=70 » installe
+# aujourd'hui la 84 et reproduit EXACTEMENT la même erreur, alors que le paquet
+# est bien là — piège vécu, deux déploiements pour le comprendre.
+setuptools<81
