@@ -33,6 +33,36 @@ cd frontend && npm install && npm run dev
 Au premier lancement, un graphe d'exemple est déjà en place. **Appuie sur
 Démarrer** : trois « stations » simulées apparaissent sur le waterfall.
 
+## Production
+
+Le déploiement suit **exactement** le schéma de surfcast, pour ne pas inventer
+une deuxième façon de faire :
+
+```
+push sur master ──► GitHub Actions ──► ghcr.io/calaxo/blocksdr:latest
+                                              │
+                          Komodo (stack « blocksdr », serveur local)
+                          tire l'image + le docker-compose.yml de HomeCalLab
+                                              │
+                                    Traefik local ──► https://blocksdr.example.org
+```
+
+| Pièce | Où | Détail |
+|---|---|---|
+| Image | `.github/workflows/docker-publish.yml` | Un seul conteneur : front buildé + backend. Tags `latest` et sha court. Le `GITHUB_TOKEN` du dépôt suffit pour publier sur ghcr |
+| Déploiement | `HomeCalLab/stacks/blocksdr/docker-compose.yml` | Le dépôt applicatif est séparé du dépôt de déploiement |
+| Identifiants | Komodo | `registry_provider = ghcr.io`, `registry_account = calaxo` — le paquet ghcr est **privé**, sans ça le `pull` renvoie « denied » |
+
+**Mettre à jour la production** : pousser sur `master`, attendre la CI, puis
+*Deploy* sur la stack Komodo (`auto_pull` est actif, l'image est retirée à
+chaque déploiement). Pas de redéploiement automatique sur push — c'est la
+convention du homelab.
+
+⚠️ **Un dongle = un programme.** En production, blocksdr tourne sur sa **source
+simulée** : il ne touche pas au RTL-SDR et cohabite donc avec le stack
+`openwebrx`, qui lui tient le dongle en permanence. Pour lui donner le vrai
+signal, il faudra **arrêter openwebrx** d'abord.
+
 ## Ce qu'on voit à l'écran
 
 | Zone | Rôle |
