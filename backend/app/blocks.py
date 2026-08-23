@@ -216,9 +216,10 @@ class RtlSdrSource(Block):
                 self.error = ("Aucun dongle visible. Le conteneur reçoit-il "
                               "/dev/bus/usb ? (bloc `devices` du docker-compose)")
             elif "busy" in msg.lower() or "claim" in msg.lower() or "-6" in msg:
-                self.error = ("Dongle déjà pris par un autre programme — "
-                              "openwebrx, très probablement. UN DONGLE = UN "
-                              "PROGRAMME : arrête l'autre stack d'abord.")
+                self.error = ("Dongle déjà pris. UN DONGLE = UN PROGRAMME : soit "
+                              "un autre conteneur l'utilise, soit le graphe "
+                              "précédent ne l'a pas rendu. Dans le doute, "
+                              "redémarrer le conteneur le libère.")
             else:
                 self.error = f"Dongle inaccessible : {msg}"
             self.sdr = None
@@ -238,10 +239,13 @@ class RtlSdrSource(Block):
     def _boucle_lecture(self):
         n = int(self.p["block_size"])
         while not self.stop.is_set():
-            try:
-                raw = self.sdr.read_bytes(2 * n)
-            except Exception:
+            sdr = self.sdr
+            if sdr is None:      # fermé pendant qu'on tournait
                 break
+            try:
+                raw = sdr.read_bytes(2 * n)
+            except Exception:
+                break            # la fermeture fait échouer la lecture : c'est le signal
             if self.q.full():
                 # File pleine = le traitement a décroché. On jette le PLUS ANCIEN
                 # plutôt que le plus récent : sur une écoute en direct, accumuler
@@ -283,14 +287,30 @@ class RtlSdrSource(Block):
         return {"out": Signal(x, float(self.p["sample_rate"]), float(self.p["center_freq"]))}
 
     def close(self):
+        """Rendre le dongle, dans le bon ordre.
+
+        ⚠️ Le piège vécu : lever le drapeau d'arrêt puis attendre le fil ne
+        suffit pas. Le fil est BLOQUÉ dans `read_bytes` et ne regardera le
+        drapeau qu'au retour de la lecture — s'il revient. On se retrouvait
+        alors avec un `join` qui expire, un fil vivant qui tient encore le
+        périphérique, et le graphe suivant qui échouait sur « dongle déjà pris
+        par un autre programme ». Message d'autant plus déroutant qu'il
+        accusait un autre logiciel alors que le coupable était le précédent
+        graphe de BlockSDR lui-même.
+
+        L'ordre correct : FERMER d'abord, ce qui fait échouer la lecture en
+        cours et libère le fil, PUIS l'attendre brièvement.
+        """
         self.stop.set()
-        if self.lecteur is not None:
-            self.lecteur.join(timeout=2.0)
         if self.sdr is not None:
             try:
                 self.sdr.close()
             except Exception:
                 pass
+            self.sdr = None
+        if self.lecteur is not None:
+            self.lecteur.join(timeout=1.0)
+            self.lecteur = None
 
 
 # --------------------------------------------------------------------------
