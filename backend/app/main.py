@@ -109,6 +109,13 @@ class Engine:
         try:
             while self.running:
                 t0 = time.perf_counter()
+                # ⚠️ La charge se mesure en temps PROCESSEUR, pas en temps écoulé.
+                # Avec une source matérielle, le tour passe l'essentiel de sa
+                # durée BLOQUÉ dans la lecture USB : compté en temps écoulé, on
+                # affichait 98 % de charge alors que le processeur ne faisait
+                # rien — une fausse alerte qui donne envie d'optimiser du code
+                # qui n'est pas le problème.
+                c0 = time.process_time()
                 ctx.tick = self.ticks
                 ctx.now = t0
                 try:
@@ -119,7 +126,7 @@ class Engine:
                     await self._broadcast_json({"type": "error", "message": self.error})
                     break
                 self.ticks += 1
-                busy += time.perf_counter() - t0
+                busy += time.process_time() - c0
 
                 if pending:
                     frames, pending[:] = list(pending), []
