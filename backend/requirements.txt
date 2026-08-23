@@ -5,3 +5,9 @@ pydantic==2.10.4
 # Pilote du dongle. Présent dans l'image ; le bloc RTL-SDR reste inutilisable
 # tant que le conteneur ne reçoit pas /dev/bus/usb (voir le compose du stack).
 pyrtlsdr==0.3.0
+# ⚠️ INDISPENSABLE avec pyrtlsdr 0.3.0 : il importe `pkg_resources`, qui vit
+# dans setuptools. Depuis Python 3.12 les images slim ne l'embarquent plus, et
+# pip ne l'installe plus implicitement. Sans cette ligne, l'import échoue sur
+# « No module named 'pkg_resources' » — un message qui ne parle pas du tout du
+# vrai problème.
+setuptools>=70
