@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 340" width="980" height="340" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title>Chaîne audio WFM et le point dur</title>
+  <desc>De 2,4 millions d'échantillons par seconde jusqu'aux 48 kHz de la carte son, par décimations entières ; et la dérive d'horloge entre le quartz du dongle et celui de la carte son, absorbée par une lecture à pas fractionnaire dans un AudioWorklet.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="980" height="340" fill="#ffffff"/>
+  <text x="24" y="30" font-size="17" font-weight="700" fill="#0f172a">Chaîne audio FM large — et le seul endroit qui pose vraiment problème</text>
+  <text x="24" y="50" font-size="12" fill="#475569">Toutes les divisions tombent juste à partir de 2 400 000. C'est ce qui permet de n'écrire que des décimateurs entiers.</text>
+
+  <!-- chaine -->
+  <g>
+    <rect x="24" y="76" width="128" height="56" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.6"/>
+    <text x="88" y="98" font-size="12" font-weight="600" text-anchor="middle" fill="#0f172a">RTL-SDR</text>
+    <text x="88" y="115" font-size="11" text-anchor="middle" fill="#9a3412">2 400 000 éch/s</text>
+
+    <rect x="184" y="76" width="128" height="56" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.6"/>
+    <text x="248" y="98" font-size="12" font-weight="600" text-anchor="middle" fill="#0f172a">Décimation ÷10</text>
+    <text x="248" y="115" font-size="11" text-anchor="middle" fill="#6d28d9">240 000 éch/s</text>
+
+    <rect x="344" y="76" width="140" height="56" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.6"/>
+    <text x="414" y="98" font-size="12" font-weight="600" text-anchor="middle" fill="#0f172a">Discriminateur FM</text>
+    <text x="414" y="115" font-size="10.5" text-anchor="middle" fill="#047857">angle(x·conj(x₋₁))</text>
+
+    <rect x="516" y="76" width="140" height="56" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.6"/>
+    <text x="586" y="98" font-size="12" font-weight="600" text-anchor="middle" fill="#0f172a">Désaccentuation</text>
+    <text x="586" y="115" font-size="10.5" text-anchor="middle" fill="#047857">50 µs (Europe)</text>
+
+    <rect x="688" y="76" width="128" height="56" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.6"/>
+    <text x="752" y="98" font-size="12" font-weight="600" text-anchor="middle" fill="#0f172a">Décimation ÷5</text>
+    <text x="752" y="115" font-size="11" text-anchor="middle" fill="#6d28d9">48 000 éch/s</text>
+
+    <rect x="848" y="76" width="108" height="56" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.8"/>
+    <text x="902" y="98" font-size="12" font-weight="600" text-anchor="middle" fill="#0f172a">Carte son</text>
+    <text x="902" y="115" font-size="11" text-anchor="middle" fill="#b91c1c">48 000 éch/s</text>
+
+    <line x1="152" y1="104" x2="180" y2="104" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="312" y1="104" x2="340" y2="104" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="484" y1="104" x2="512" y2="104" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="656" y1="104" x2="684" y2="104" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+    <line x1="816" y1="104" x2="844" y2="104" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+  </g>
+
+  <!-- le probleme -->
+  <rect x="24" y="164" width="932" height="72" rx="10" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.6"/>
+  <text x="44" y="187" font-size="13" font-weight="700" fill="#b91c1c">⚠ Les deux extrémités n'ont pas la même horloge</text>
+  <text x="44" y="207" font-size="11.5" fill="#7f1d1d">Le dongle cadence sur SON quartz, la carte son sur LE SIEN. Chacun dérive de ±20 ppm : jusqu'à 2 échantillons d'écart par seconde,</text>
+  <text x="44" y="224" font-size="11.5" fill="#7f1d1d">soit 24 ms en dix minutes. Le tampon finit par se vider (clic) ou par déborder (la latence enfle). Ça arrive quoi qu'on fasse.</text>
+
+  <!-- la solution -->
+  <rect x="24" y="252" width="932" height="64" rx="10" fill="#f0fdf4" stroke="#86efac" stroke-width="1.6"/>
+  <text x="44" y="275" font-size="13" font-weight="700" fill="#15803d">→ Lecture à pas fractionnaire dans un AudioWorklet, asservie au remplissage du tampon</text>
+  <text x="44" y="295" font-size="11.5" fill="#166534">step = 1 + k · (remplissage − cible), interpolation linéaire, boucle très lente (sinon on entend le pitch bouger).</text>
+  <text x="44" y="311" font-size="11.5" fill="#166534">⭐ Le même mécanisme absorbe aussi un AudioContext à 44 100 au lieu de 48 000 : le pas vaut 1,088 au lieu de 1,000, et le code ne change pas.</text>
+</svg>

@@ -159,8 +159,8 @@ devient 8 fois plus étroit — on a échangé de la largeur de bande contre du 
 - [ ] Clic sur le waterfall pour poser le décalage de fréquence
 - [ ] **Audio** : démodulation WFM/NFM/AM. ⚠️ Le vrai morceau n'est pas la
       démodulation (quelques lignes) mais la **dérive d'horloge** entre le quartz
-      du dongle et celui de la carte son — tampon de gigue + rééchantillonneur
-      asservi. Volontairement laissé pour plus tard
+      du dongle et celui de la carte son. Contraintes, arithmétique des cadences
+      et plan de construction : **[`docs/audio.md`](docs/audio.md)**
 - [ ] Décodeurs (ADS-B, capteurs 433/868) en blocs
 
 Étude de faisabilité et comparaison avec l'existant :
