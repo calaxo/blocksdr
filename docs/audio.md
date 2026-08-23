@@ -12,6 +12,29 @@
 > tenu — et le ton démodulé sort à **375 Hz**, exactement la fréquence dont la
 > scène simulée module sa station à −300 kHz. Aucun écrêtage.
 >
+> **Sur le VRAI dongle, station FM de la bande 88-108 MHz** : **36,6 tours/s** — exactement
+> le débit théorique (2 400 000 ÷ 65 536) — et un **taux temps réel de 1,002**
+> (14,99 s d'audio pour 14,97 s écoulées). Pas un échantillon perdu. 41 % d'un
+> cœur pour la chaîne complète : acquisition, FFT, waterfall, spectre,
+> démodulation et audio.
+>
+> ### Trois défauts que seul le matériel révèle
+>
+> | Défaut | Symptôme | Correctif |
+> |---|---|---|
+> | **Acquisition et traitement sérialisés** | 25,9 tours/s au lieu de 36,6, avec le processeur à 26 % seulement. Lire un bloc prend 27 ms, le traiter 10 : enchaînés, le cycle fait 37 ms. Le pilote comble en jetant des échantillons **en silence** | Lecture USB dans un **fil dédié** : les deux se recouvrent au lieu de s'ajouter |
+> | ⭐ **La vérification du graphe gardait le dongle** | « Dongle déjà pris par un autre programme » — par soi-même, une seconde plus tôt. `validate()` construisait un graphe complet (donc **ouvrait le matériel**) et le jetait sans le refermer | La vérification **rend ce qu'elle a réservé** |
+> | **Fermeture dans le mauvais ordre** | Un `join` sur un fil bloqué dans `read_bytes` expire sans rien libérer | **Fermer le périphérique d'abord**, ce qui fait échouer la lecture et libère le fil |
+>
+> 💡 Le deuxième dormait depuis le début : sans fil de lecture, l'instance de
+> vérification n'était référencée nulle part, le ramasse-miettes la collectait
+> aussitôt et `__del__` fermait le périphérique. Le fil garde une référence, donc
+> plus de collecte — le fil n'a pas créé le bug, il l'a **révélé**.
+>
+> Diagnostic utile à retenir : `/sys/bus/usb/devices/*/…/driver` disait **`usbfs`**,
+> donc un processus en espace utilisateur, et non le pilote TV du noyau que je
+> soupçonnais d'abord.
+>
 > Deux choses trouvées en écrivant, qui ne sont pas dans le plan :
 > - le **blocage de continu** convergeait des centaines de fois trop lentement
 >   (coefficient par échantillon appliqué à une moyenne par bloc) : la porteuse

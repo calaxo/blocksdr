@@ -104,7 +104,8 @@ Vrai dongle à **2 400 000 éch/s**, blocs de 65 536, FFT 2048 + waterfall :
 | | Charge processeur | Tours/s |
 |---|---|---|
 | Source seule | **3 %** | 36,1 *(théorique : 36,6)* |
-| Chaîne complète | **6 %** | 34,6 |
+| Acquisition + FFT + waterfall | **6 %** | 36,6 |
+| **+ démodulation FM + audio** | **41 %** | **36,6**, taux temps réel **1,002** |
 
 ⚠️ Il a fallu **ne pas utiliser `read_samples()` de pyrtlsdr** pour en arriver là :
 sa conversion interne saturait un cœur entier à elle seule (100 %, la FFT
