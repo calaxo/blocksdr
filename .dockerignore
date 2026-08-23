@@ -1,0 +1,11 @@
+# Contexte de build léger : sans ça, node_modules part vers le démon Docker.
+.git
+.gitignore
+**/node_modules
+frontend/dist
+docs
+**/__pycache__
+*.pyc
+.venv
+docker-compose.yml
+README.md

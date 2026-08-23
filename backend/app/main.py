@@ -237,3 +237,34 @@ async def ws_endpoint(ws: WebSocket):
         pass
     finally:
         engine.clients.discard(ws)
+
+# ---------------------------------------------------------------------------
+#  Service des fichiers statiques (production)
+#
+#  En développement, c'est Vite qui sert le front et relaie /api et /ws ici.
+#  En production, l'image contient le front déjà buildé et ce même processus
+#  sert tout : une seule origine, un seul port, aucun CORS, et le WebSocket
+#  passe par le même hôte que la page — donc rien à configurer côté client.
+#
+#  Ce bloc est enregistré EN DERNIER, volontairement : FastAPI teste les routes
+#  dans l'ordre de déclaration, et l'attrape-tout ci-dessous masquerait /api.
+# ---------------------------------------------------------------------------
+import os
+from fastapi.responses import FileResponse
+
+STATIC_DIR = os.environ.get("BLOCKSDR_STATIC") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+
+if os.path.isdir(STATIC_DIR):
+    _INDEX = os.path.join(STATIC_DIR, "index.html")
+
+    @app.get("/{full_path:path}")
+    def spa(full_path: str):
+        # Fichier réel demandé (assets/, favicon…) : on le sert tel quel.
+        target = os.path.normpath(os.path.join(STATIC_DIR, full_path))
+        # Garde-fou anti-remontée de chemin : rester dans STATIC_DIR.
+        if target.startswith(os.path.normpath(STATIC_DIR)) and os.path.isfile(target):
+            return FileResponse(target)
+        # Sinon, route côté client (vite-plugin-pages) : on rend l'index et
+        # c'est React Router qui décide.
+        return FileResponse(_INDEX)
