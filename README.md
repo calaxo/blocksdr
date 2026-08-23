@@ -97,6 +97,25 @@ dessinent eux-mêmes dans leur canvas ; React ne gère que ce qui change raremen
 Un `setState` par trame, à 25 images/s et par afficheur, suffirait à faire ramer
 le navigateur.
 
+## Ce que ça coûte (mesuré sur la VM, 2026-08-24)
+
+Vrai dongle à **2 400 000 éch/s**, blocs de 65 536, FFT 2048 + waterfall :
+
+| | Charge processeur | Tours/s |
+|---|---|---|
+| Source seule | **3 %** | 36,1 *(théorique : 36,6)* |
+| Chaîne complète | **6 %** | 34,6 |
+
+⚠️ Il a fallu **ne pas utiliser `read_samples()` de pyrtlsdr** pour en arriver là :
+sa conversion interne saturait un cœur entier à elle seule (100 %, la FFT
+n'ajoutant rien). Elle alloue du **complex128** — 16 octets par échantillon,
+38 Mo/s à cette cadence — et le remplit par affectations entrelacées. La
+conversion maison tient en une passe, avec une vue `float32 → complex64` qui ne
+copie rien. Détail dans `blocks.py`.
+
+👉 C'est ce qui rend l'audio jouable : il reste **94 % du cœur** pour la
+décimation et la démodulation.
+
 ## Les blocs
 
 | Bloc | Rôle |

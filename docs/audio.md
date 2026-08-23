@@ -116,6 +116,17 @@ c'est le compromis habituel, et il est acceptable.
 👉 **Conséquence sur l'existant** : la taille de bloc par défaut du bloc RTL-SDR
 devra passer de 16 384 à 65 536 pour l'audio.
 
+## 5 bis. Le budget processeur est là, et il n'était pas gagné
+
+Mesuré sur la VM le 2026-08-24, dongle réel à 2,4 MS/s : **6 % d'un cœur** pour
+l'acquisition + FFT + waterfall, 36 tours/s sur 36,6 théoriques.
+
+Mais avant correction, la **source seule** en consommait **100 %** — la faute à
+`read_samples()` de pyrtlsdr et à son complex128. Autrement dit : sans cette
+correction, il n'y avait pas un seul pour-cent de disponible pour la
+démodulation, et l'audio aurait été condamné avant d'être écrit. C'est le genre
+de chose qu'on ne voit qu'en branchant le vrai matériel.
+
 ## 6. Les contraintes propres au RTL-SDR
 
 | Contrainte | Effet sur l'audio | Remède |
