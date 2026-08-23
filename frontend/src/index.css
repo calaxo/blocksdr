@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+    margin: 0;
+    font-size: 14px;
+    background:
+      radial-gradient(1200px 500px at 20% -180px, rgba(56,189,248,.08), transparent 70%),
+      #080d18;
+  }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { @apply bg-line rounded-full; }
+}
+
+@layer components {
+  .panel { @apply bg-card border border-line rounded-xl shadow-card; }
+  .btn {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-line
+           bg-card2 text-ink text-sm transition-colors;
+  }
+  .btn:hover { @apply border-accent/60 bg-card; }
+  .btn-primary { @apply bg-accent/15 border-accent/50 text-accent; }
+  .btn-danger { @apply bg-bad/10 border-bad/40 text-bad; }
+  .label { @apply block text-[11px] uppercase tracking-wide text-mut mb-1; }
+  .field {
+    @apply w-full bg-card2 border border-line rounded-lg px-2.5 py-1.5 text-sm text-ink
+           outline-none;
+  }
+  .field:focus { @apply border-accent; }
+  .chip { @apply text-[11px] px-2 py-0.5 rounded-full border border-line text-mut; }
+}
+
+/* React Flow : la feuille de style fournie est claire, on la repasse en sombre.
+   Les variables sont celles exposées par la bibliothèque. */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: #3b5b86;
+}
+.react-flow__edge-path { stroke: #3b5b86; stroke-width: 2; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: #38bdf8; }
+.react-flow__handle { border: none; }
+.react-flow__attribution { display: none; }
+.react-flow__controls-button {
+  background: #0f1626; border-bottom: 1px solid #1e2b42; fill: #8195b4;
+}
+.react-flow__controls-button:hover { background: #16203a; }

@@ -1,0 +1,39 @@
+# BlockSDR en développement : backend Python + front Vite.
+#
+#   docker compose up --build     puis  http://localhost:5180
+#
+# Le front est servi par Vite, qui relaie /api et /ws vers le backend : une
+# seule origine côté navigateur, donc aucun souci de CORS ni de WebSocket.
+services:
+  backend:
+    build: ./backend
+    container_name: blocksdr-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Rechargement à chaud du Python pendant l-écriture du projet.
+      - ./backend/app:/app/app:ro
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    # --- LE JOUR DU VRAI DONGLE -------------------------------------------
+    # Décommenter, décommenter aussi pyrtlsdr dans requirements.txt, puis
+    # remplacer le bloc « Source simulée » par « RTL-SDR » dans le graphe.
+    # devices:
+    #   - /dev/bus/usb:/dev/bus/usb
+
+  frontend:
+    build: ./frontend
+    container_name: blocksdr-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # Vu depuis le conteneur, le backend n-est pas sur localhost.
+      API_TARGET: http://backend:8000
+    ports:
+      - "5180:5180"
+    volumes:
+      - ./frontend:/app
+      # Volume anonyme : garde les node_modules installés dans l-image et
+      # empêche le dossier de l-hôte (vide, et sous Windows) de les masquer.
+      - /app/node_modules

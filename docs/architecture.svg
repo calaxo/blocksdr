@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 430" width="980" height="430" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <title>Architecture de BlockSDR</title>
+  <desc>Le backend Python détient le graphe de blocs et le fait tourner ; il expose un REST pour le catalogue et le graphe, et un WebSocket binaire pour le flux. Le front React dessine les afficheurs dans des canvas, hors de l'état React.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="980" height="430" fill="#ffffff"/>
+  <text x="24" y="32" font-size="18" font-weight="700" fill="#0f172a">BlockSDR — deux canaux, deux rythmes</text>
+  <text x="24" y="53" font-size="12.5" fill="#475569">Le REST porte ce qui est rare et structuré. Le WebSocket binaire porte le flux, où chaque octet compte.</text>
+
+  <!-- Backend -->
+  <rect x="24" y="76" width="410" height="252" rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+  <text x="40" y="98" font-size="12" font-weight="700" fill="#1d4ed8">backend/ — Python (FastAPI + numpy)</text>
+
+  <rect x="44" y="112" width="176" height="44" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="56" y="130" font-size="12.5" font-weight="600" fill="#0f172a">dsp.py</text>
+  <text x="56" y="146" font-size="10.5" fill="#64748b">filtre RIF, oscillateur, FFT</text>
+
+  <rect x="238" y="112" width="176" height="44" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="250" y="130" font-size="12.5" font-weight="600" fill="#0f172a">blocks.py</text>
+  <text x="250" y="146" font-size="10.5" fill="#64748b">catalogue + schéma des réglages</text>
+
+  <rect x="44" y="168" width="176" height="44" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="56" y="186" font-size="12.5" font-weight="600" fill="#0f172a">graph.py</text>
+  <text x="56" y="202" font-size="10.5" fill="#64748b">tri topologique, un tour = un bloc</text>
+
+  <rect x="238" y="168" width="176" height="44" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="250" y="186" font-size="12.5" font-weight="600" fill="#0f172a">main.py</text>
+  <text x="250" y="202" font-size="10.5" fill="#64748b">API + ordonnanceur cadencé</text>
+
+  <rect x="44" y="228" width="370" height="82" rx="8" fill="#fff7ed" stroke="#fdba74" stroke-width="1.4"/>
+  <text x="56" y="248" font-size="11.5" font-weight="600" fill="#9a3412">Ce qui circule entre deux blocs</text>
+  <text x="56" y="266" font-size="11" fill="#7c2d12">Signal = tableau numpy + cadence + fréquence centrale.</text>
+  <text x="56" y="283" font-size="11" fill="#7c2d12">Les métadonnées suivent le signal : après une décimation par 8,</text>
+  <text x="56" y="300" font-size="11" fill="#7c2d12">l’afficheur sait tout seul qu’il montre 8 fois moins large.</text>
+
+  <!-- Canaux -->
+  <rect x="466" y="120" width="104" height="36" rx="18" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5"/>
+  <text x="518" y="143" font-size="12" font-weight="600" text-anchor="middle" fill="#15803d">REST /api</text>
+  <text x="518" y="172" font-size="10.5" text-anchor="middle" fill="#475569">catalogue, graphe,</text>
+  <text x="518" y="187" font-size="10.5" text-anchor="middle" fill="#475569">marche / arrêt</text>
+
+  <rect x="466" y="212" width="104" height="36" rx="18" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5"/>
+  <text x="518" y="235" font-size="12" font-weight="600" text-anchor="middle" fill="#b91c1c">WS /ws</text>
+  <text x="518" y="264" font-size="10.5" text-anchor="middle" fill="#475569">binaire, 25 trames/s</text>
+  <text x="518" y="279" font-size="10.5" text-anchor="middle" fill="#475569">2048 points = 2048 o</text>
+
+  <line x1="434" y1="138" x2="462" y2="138" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+  <line x1="574" y1="138" x2="600" y2="138" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+  <line x1="434" y1="230" x2="462" y2="230" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+  <line x1="574" y1="230" x2="600" y2="230" stroke="#334155" stroke-width="1.8" marker-end="url(#a)"/>
+
+  <!-- Frontend -->
+  <rect x="604" y="76" width="352" height="252" rx="10" fill="#f5f3ff" stroke="#c4b5fd" stroke-width="1.5"/>
+  <text x="620" y="98" font-size="12" font-weight="700" fill="#6d28d9">frontend/ — React + Vite + Tailwind</text>
+
+  <rect x="622" y="112" width="316" height="44" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="634" y="130" font-size="12.5" font-weight="600" fill="#0f172a">store.jsx — le graphe, dans React</text>
+  <text x="634" y="146" font-size="10.5" fill="#64748b">change rarement : blocs, liaisons, réglages, statuts</text>
+
+  <rect x="622" y="168" width="316" height="60" rx="8" fill="#ffffff" stroke="#dc2626" stroke-width="1.6"/>
+  <text x="634" y="186" font-size="12.5" font-weight="600" fill="#0f172a">lib/bus.js — le flux, HORS de React</text>
+  <text x="634" y="203" font-size="10.5" fill="#b91c1c">Un setState par trame, à 25 images/s et par afficheur,</text>
+  <text x="634" y="219" font-size="10.5" fill="#b91c1c">suffirait à faire ramer le navigateur.</text>
+
+  <rect x="622" y="240" width="316" height="70" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="634" y="258" font-size="12.5" font-weight="600" fill="#0f172a">components/ — canvas</text>
+  <text x="634" y="275" font-size="10.5" fill="#64748b">Le waterfall décale son image d’un pixel et écrit une seule</text>
+  <text x="634" y="291" font-size="10.5" fill="#64748b">ligne : redessiner l’historique coûterait cent fois plus.</text>
+
+  <!-- bandeau bas -->
+  <rect x="24" y="344" width="932" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.4"/>
+  <text x="44" y="367" font-size="12.5" font-weight="600" fill="#0f172a">Ajouter un bloc = une classe Python.</text>
+  <text x="44" y="387" font-size="11.5" fill="#475569">Il apparaît dans la palette avec son formulaire, engendré depuis son schéma de paramètres — sans toucher une ligne de React.</text>
+</svg>
