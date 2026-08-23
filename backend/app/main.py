@@ -50,8 +50,21 @@ class Engine:
         self.load = 0.0          # part du temps passée à calculer (0 → 1)
 
     # -- graphe ------------------------------------------------------------
-    def validate(self, spec: dict) -> Flowgraph:
-        return Flowgraph(spec)
+    def validate(self, spec: dict) -> None:
+        """Vérifie qu'un graphe tient debout, puis REND ce qu'il a réservé.
+
+        ⚠️ Construire un graphe n'est pas une opération neutre : la source
+        RTL-SDR ouvre le dongle et démarre son fil de lecture dès son
+        constructeur. Sans le `close()` ci-dessous, cette instance de
+        vérification gardait le matériel, et le déploiement réel qui suit
+        échouait sur « dongle déjà pris » — par soi-même, une seconde plus tôt.
+
+        Le symptôme était trompeur au possible : le message accusait un autre
+        programme, et un redémarrage du conteneur « corrigeait » le problème
+        jusqu'au prochain envoi de graphe.
+        """
+        fg = Flowgraph(spec)
+        fg.close()
 
     async def set_graph(self, spec: dict) -> None:
         was = self.running
