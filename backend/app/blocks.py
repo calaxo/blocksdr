@@ -187,7 +187,9 @@ class RtlSdrSource(Block):
         try:
             from rtlsdr import RtlSdr  # type: ignore
         except Exception as e:  # pragma: no cover - dépend de l'environnement
-            self.error = f"pyrtlsdr indisponible ({e}). Utilise la source simulée."
+            self.error = (f"pyrtlsdr absent de l'image ({e}). "
+                          "Vérifie que requirements.txt le contient et que la CI a "
+                          "reconstruit l'image. En attendant : source simulée.")
             return
         try:
             self.sdr = RtlSdr(device_index=int(self.p["device_index"]))
@@ -197,7 +199,17 @@ class RtlSdrSource(Block):
             g = self.p["gain"]
             self.sdr.gain = "auto" if g == "auto" else float(g)
         except Exception as e:
-            self.error = f"Dongle inaccessible : {e}"
+            msg = str(e)
+            # Les deux échecs qu'on rencontre vraiment, et leur remède.
+            if "usb_open" in msg or "No device" in msg.lower() or "-1" in msg:
+                self.error = ("Aucun dongle visible. Le conteneur reçoit-il "
+                              "/dev/bus/usb ? (bloc `devices` du docker-compose)")
+            elif "busy" in msg.lower() or "claim" in msg.lower() or "-6" in msg:
+                self.error = ("Dongle déjà pris par un autre programme — "
+                              "openwebrx, très probablement. UN DONGLE = UN "
+                              "PROGRAMME : arrête l'autre stack d'abord.")
+            else:
+                self.error = f"Dongle inaccessible : {msg}"
             self.sdr = None
 
     def work(self, ins, ctx):

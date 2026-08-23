@@ -2,6 +2,6 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 numpy==2.2.1
 pydantic==2.10.4
-# Décommenter le jour où le dongle est branché sur la machine qui exécute ce
-# backend (le bloc RTL-SDR signale proprement son absence en attendant) :
-# pyrtlsdr==0.3.0
+# Pilote du dongle. Présent dans l'image ; le bloc RTL-SDR reste inutilisable
+# tant que le conteneur ne reçoit pas /dev/bus/usb (voir le compose du stack).
+pyrtlsdr==0.3.0

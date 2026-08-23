@@ -124,6 +124,10 @@ class Flowgraph:
             for port, sig in out.items():
                 vals[(nid, port)] = sig
 
+    # Sources dont le débit est imposé par le matériel : leur lecture BLOQUE
+    # jusqu'à ce que le périphérique ait produit assez d'échantillons.
+    HARDWARE_SOURCES = {"rtlsdr_source"}
+
     def period(self) -> float:
         """Durée réelle que représente un tour, pour cadencer la boucle.
 
@@ -131,7 +135,15 @@ class Flowgraph:
         produirait des heures de signal par seconde. C'est le rôle du bloc
         « Throttle » de GNU Radio ; ici c'est l'ordonnanceur qui s'en charge,
         d'après la source la plus lente.
+
+        ⚠️ SAUF avec un vrai dongle : la lecture USB bloque déjà le temps qu'il
+        faut, donc elle cadence la boucle toute seule. Ajouter une attente
+        par-dessus ferait DÉBORDER le tampon du pilote, et les échantillons
+        perdus s'entendraient — des craquements réguliers dans l'audio. On rend
+        donc 0 : pas d'attente artificielle.
         """
+        if any(b.type in self.HARDWARE_SOURCES for b in self.blocks.values()):
+            return 0.0
         best = 0.05
         for b in self.blocks.values():
             sr = float(b.p.get("sample_rate") or 0)

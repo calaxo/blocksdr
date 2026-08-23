@@ -96,6 +96,14 @@ class Engine:
             pending.append(encode_frame(header, payload))
 
         ctx = Ctx(emit=emit)
+        # Le tour de graphe s'exécute HORS de la boucle asyncio.
+        #
+        # Avec la source simulée, tout est du numpy qui rend la main tout de
+        # suite. Avec un vrai dongle, `read_samples()` BLOQUE le temps que l'USB
+        # produise le bloc demandé — soit des dizaines de millisecondes pendant
+        # lesquelles plus rien d'autre ne tournerait : ni l'envoi des trames, ni
+        # l'API, ni même la réponse à un « Arrêter ». Un exécuteur règle ça.
+        loop = asyncio.get_running_loop()
         next_at = time.perf_counter()
         window_t0, window_n, busy = next_at, 0, 0.0
         try:
@@ -104,7 +112,7 @@ class Engine:
                 ctx.tick = self.ticks
                 ctx.now = t0
                 try:
-                    self.fg.tick(ctx)
+                    await loop.run_in_executor(None, self.fg.tick, ctx)
                 except Exception as e:  # un bloc a explosé : on arrête proprement
                     self.error = f"Erreur d'exécution : {e}"
                     self.running = False
@@ -128,6 +136,11 @@ class Engine:
                         "load": round(self.load, 3), "ticks": self.ticks,
                     })
 
+                if period <= 0.0:
+                    # Source matérielle : c'est elle qui donne le tempo, on ne
+                    # fait que rendre la main à la boucle entre deux tours.
+                    await asyncio.sleep(0)
+                    continue
                 next_at += period
                 delay = next_at - time.perf_counter()
                 if delay < -0.5:      # on a pris trop de retard : on se recale
