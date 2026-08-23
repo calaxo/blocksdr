@@ -15,6 +15,8 @@ largeur de bande il représente — exactement comme GNU Radio propage son
 
 from __future__ import annotations
 
+import queue
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -189,6 +191,10 @@ class RtlSdrSource(Block):
 
     def setup(self):
         self.sdr = None
+        self.q = None
+        self.stop = threading.Event()
+        self.lecteur = None
+        self.perdus = 0
         try:
             from rtlsdr import RtlSdr  # type: ignore
         except Exception as e:  # pragma: no cover - dépend de l'environnement
@@ -216,6 +222,39 @@ class RtlSdrSource(Block):
             else:
                 self.error = f"Dongle inaccessible : {msg}"
             self.sdr = None
+            return
+
+        # ⚠️ La lecture USB tourne dans SON PROPRE FIL, et pas dans le tour de
+        # graphe. Mesuré autrement : lire un bloc prend 27 ms (c'est sa durée
+        # réelle), le traiter en prend 10 — enchaînés, le cycle fait 37 ms et on
+        # ne tient plus les 36,6 tours/s du dongle. Le pilote comble en jetant
+        # des échantillons, EN SILENCE, et ça s'entend en craquements réguliers.
+        # Avec un fil dédié, l'acquisition du bloc suivant se fait PENDANT le
+        # traitement du précédent : les deux se recouvrent au lieu de s'ajouter.
+        self.q = queue.Queue(maxsize=6)
+        self.lecteur = threading.Thread(target=self._boucle_lecture, daemon=True)
+        self.lecteur.start()
+
+    def _boucle_lecture(self):
+        n = int(self.p["block_size"])
+        while not self.stop.is_set():
+            try:
+                raw = self.sdr.read_bytes(2 * n)
+            except Exception:
+                break
+            if self.q.full():
+                # File pleine = le traitement a décroché. On jette le PLUS ANCIEN
+                # plutôt que le plus récent : sur une écoute en direct, accumuler
+                # du retard est pire qu'un trou.
+                try:
+                    self.q.get_nowait()
+                    self.perdus += 1
+                except queue.Empty:
+                    pass
+            try:
+                self.q.put_nowait(raw)
+            except queue.Full:
+                pass
 
     def work(self, ins, ctx):
         if self.sdr is None:
@@ -233,7 +272,10 @@ class RtlSdrSource(Block):
         # partie réelle prise sur les indices pairs et l'imaginaire sur les
         # impairs — c'est précisément la disposition I/Q du dongle. Zéro copie
         # pour cette étape, et deux fois moins de mémoire que complex128.
-        raw = self.sdr.read_bytes(2 * n)
+        try:
+            raw = self.q.get(timeout=2.0)
+        except queue.Empty:
+            return {}
         a = np.frombuffer(memoryview(raw), dtype=np.uint8).astype(np.float32)
         a -= 127.5          # le dongle code sur 8 bits non signés, centré sur 127,5
         a *= 1.0 / 127.5    # ramené dans [-1, 1]
@@ -241,6 +283,9 @@ class RtlSdrSource(Block):
         return {"out": Signal(x, float(self.p["sample_rate"]), float(self.p["center_freq"]))}
 
     def close(self):
+        self.stop.set()
+        if self.lecteur is not None:
+            self.lecteur.join(timeout=2.0)
         if self.sdr is not None:
             try:
                 self.sdr.close()
