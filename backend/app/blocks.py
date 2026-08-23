@@ -216,7 +216,23 @@ class RtlSdrSource(Block):
         if self.sdr is None:
             return {}
         n = int(self.p["block_size"])
-        x = self.sdr.read_samples(n).astype(C64)
+
+        # ⚠️ On N'UTILISE PAS `read_samples()` de pyrtlsdr. Mesuré sur cette VM
+        # à 2,4 MS/s : la source SEULE saturait un cœur (100 %), la FFT
+        # n'ajoutant rien. En cause, sa conversion interne : elle alloue un
+        # tableau **complex128** (16 octets par échantillon, soit 38 Mo/s ici) et
+        # le remplit par deux affectations entrelacées, puis divise.
+        #
+        # Ici : une seule passe, et surtout la vue finale. Un tableau de float32
+        # de longueur 2N relu en complex64 donne exactement N complexes, la
+        # partie réelle prise sur les indices pairs et l'imaginaire sur les
+        # impairs — c'est précisément la disposition I/Q du dongle. Zéro copie
+        # pour cette étape, et deux fois moins de mémoire que complex128.
+        raw = self.sdr.read_bytes(2 * n)
+        a = np.frombuffer(memoryview(raw), dtype=np.uint8).astype(np.float32)
+        a -= 127.5          # le dongle code sur 8 bits non signés, centré sur 127,5
+        a *= 1.0 / 127.5    # ramené dans [-1, 1]
+        x = a.view(C64)
         return {"out": Signal(x, float(self.p["sample_rate"]), float(self.p["center_freq"]))}
 
     def close(self):
