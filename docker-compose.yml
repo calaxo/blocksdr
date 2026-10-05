@@ -14,10 +14,16 @@ services:
     volumes:
       # Rechargement à chaud du Python pendant l-écriture du projet.
       - ./backend/app:/app/app:ro
+    # --reload sans watchfiles (absent de l'image) : uvicorn se rabat sur une
+    # simple surveillance par sondage, suffisante ici.
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
-    # --- LE JOUR DU VRAI DONGLE -------------------------------------------
-    # Décommenter, décommenter aussi pyrtlsdr dans requirements.txt, puis
-    # remplacer le bloc « Source simulée » par « RTL-SDR » dans le graphe.
+    environment:
+      # Origine et noms d'hôte acceptés en développement (Vite relaie /api
+      # avec Host « backend », et /ws en gardant localhost:5180).
+      BLOCKSDR_ORIGINS: http://localhost:5180
+      BLOCKSDR_HOSTS: localhost,127.0.0.1,backend
+    # --- AVEC LE VRAI DONGLE ----------------------------------------------
+    # Décommenter, puis remplacer « Source simulée » par « RTL-SDR ».
     # devices:
     #   - /dev/bus/usb:/dev/bus/usb
 

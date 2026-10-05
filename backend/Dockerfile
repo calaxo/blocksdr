@@ -1,18 +1,15 @@
-# Image du backend BlockSDR.
+# Image du backend BlockSDR, pour le DÉVELOPPEMENT (docker-compose.yml racine).
+# L'image de production est le Dockerfile racine.
 # python:3.12-slim et pas alpine : numpy y est fourni en roue précompilée,
 # alors qu'alpine (musl) impose une compilation de plusieurs minutes.
-FROM python:3.12-slim
+FROM python:3.12.15-slim-trixie@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
 
-# librtlsdr : présente dès maintenant pour que le jour où l'on décommente
-# pyrtlsdr, il n'y ait rien à changer à l'image. Sans dongle passé au
-# conteneur, elle ne sert simplement à rien.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends librtlsdr0 \
- && rm -rf /var/lib/apt/lists/*
+# librtlsdr : le pilote du dongle, appelé par app/rtl.py.
+RUN apt-get update  && apt-get install -y --no-install-recommends librtlsdr0  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.txt
 COPY app ./app
 
 EXPOSE 8000

@@ -18,21 +18,73 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import struct
 import time
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .blocks import Ctx, catalogue
 from .graph import DEFAULT_GRAPH, Flowgraph, GraphError
+from .schema import GraphIn, RunIn
+from .security import ALLOWED_HOSTS, ALLOWED_ORIGINS, Guard, origin_ok
+
+log = logging.getLogger("blocksdr")
+
+# --- Limites du WebSocket ---------------------------------------------------
+# Une poignée d'onglets ouverts, pas plus : chaque client reçoit TOUT le flux.
+MAX_WS_CLIENTS = 8
+# Trames en attente par client. Au-delà, ce client est trop lent (réseau, onglet
+# en arrière-plan) : on jette SES trames, sans ralentir les autres ni le moteur.
+CLIENT_QUEUE = 256
+# Le client n'a rien à dire (il ne fait qu'écouter) : quelques messages par
+# fenêtre de 10 s sont tolérés, au-delà la connexion est fermée.
+WS_MSG_PER_10S = 20
 
 
 def encode_frame(header: dict, payload: bytes) -> bytes:
     h = json.dumps(header, separators=(",", ":")).encode()
     return struct.pack("<I", len(h)) + h + payload
+
+
+class Client:
+    """Un abonné au flux, avec SA file d'envoi.
+
+    ⚠️ Avant, la diffusion attendait chaque `send` l'un après l'autre : un seul
+    client lent (téléphone en 4G, onglet gelé) ralentissait la boucle du moteur
+    entière, et c'est le dongle qui débordait. Désormais le moteur ne fait que
+    DÉPOSER les trames ; une tâche par client les envoie à son rythme.
+    """
+
+    def __init__(self, ws: WebSocket):
+        self.ws = ws
+        self.q: asyncio.Queue[bytes | str] = asyncio.Queue(maxsize=CLIENT_QUEUE)
+        self.dropped = 0
+
+    def push(self, msg: bytes | str) -> None:
+        try:
+            self.q.put_nowait(msg)
+        except asyncio.QueueFull:
+            self.dropped += 1
+
+    async def run(self) -> None:
+        try:
+            while True:
+                m = await self.q.get()
+                if isinstance(m, bytes):
+                    await self.ws.send_bytes(m)
+                else:
+                    await self.ws.send_text(m)
+        except Exception:
+            # Connexion perdue : la boucle de réception de `ws_endpoint` le
+            # verra aussi et retirera le client.
+            pass
 
 
 class Engine:
@@ -44,7 +96,10 @@ class Engine:
         self.task: asyncio.Task | None = None
         self.running = False
         self.error: str | None = None
-        self.clients: set[WebSocket] = set()
+        self.clients: set[Client] = set()
+        # Une seule modification à la fois (graphe ou marche/arrêt) : deux
+        # requêtes simultanées ouvraient sinon deux fois le dongle.
+        self.lock = asyncio.Lock()
         self.ticks = 0
         self.rate = 0.0          # tours par seconde réellement atteints
         self.load = 0.0          # part du temps passée à calculer (0 → 1)
@@ -62,8 +117,14 @@ class Engine:
         Le symptôme était trompeur au possible : le message accusait un autre
         programme, et un redémarrage du conteneur « corrigeait » le problème
         jusqu'au prochain envoi de graphe.
+
+        Désormais, si un graphe TOURNE, la vérification se fait sans toucher
+        au matériel : le dongle est tenu par le graphe en marche, et l'ouvrir
+        une seconde fois échouait TOUJOURS sur « dongle déjà pris » — changer
+        un réglage en pleine écoute était impossible. Le vrai essai a lieu au
+        redémarrage, juste après l'arrêt de l'ancien graphe.
         """
-        fg = Flowgraph(spec)
+        fg = Flowgraph(spec, hardware=not self.running)
         fg.close()
 
     async def set_graph(self, spec: dict) -> None:
@@ -78,6 +139,10 @@ class Engine:
     async def start(self) -> None:
         if self.running:
             return
+        if self.fg is not None:
+            # Graphe arrêté par une erreur d'exécution : il tient encore ses
+            # ressources (le dongle). On le rend avant d'en construire un autre.
+            await self.stop()
         try:
             self.fg = Flowgraph(self.spec)
         except GraphError as e:
@@ -97,8 +162,11 @@ class Engine:
                 pass
             self.task = None
         if self.fg:
-            self.fg.close()
-            self.fg = None
+            # Rendre le dongle peut prendre jusqu'à quelques dixièmes de
+            # seconde (fin de la lecture USB en cours) : hors de la boucle
+            # asyncio, pour que le flux des autres requêtes ne gèle pas.
+            fg, self.fg = self.fg, None
+            await asyncio.to_thread(fg.close)
 
     async def _loop(self) -> None:
         assert self.fg
@@ -134,16 +202,19 @@ class Engine:
                 try:
                     await loop.run_in_executor(None, self.fg.tick, ctx)
                 except Exception as e:  # un bloc a explosé : on arrête proprement
+                    # Le détail (pile d'appels) reste dans les journaux du
+                    # conteneur ; le navigateur ne reçoit que le message.
+                    log.exception("tour de graphe en échec")
                     self.error = f"Erreur d'exécution : {e}"
                     self.running = False
-                    await self._broadcast_json({"type": "error", "message": self.error})
+                    self._broadcast_json({"type": "error", "message": self.error})
                     break
                 self.ticks += 1
                 busy += time.process_time() - c0
 
                 if pending:
                     frames, pending[:] = list(pending), []
-                    await self._broadcast(frames)
+                    self._broadcast(frames)
 
                 # statistiques, une fois par seconde
                 window_n += 1
@@ -151,7 +222,7 @@ class Engine:
                     self.rate = window_n / (t0 - window_t0)
                     self.load = min(1.0, busy / (t0 - window_t0))
                     window_t0, window_n, busy = t0, 0, 0.0
-                    await self._broadcast_json({
+                    self._broadcast_json({
                         "type": "stats", "rate": round(self.rate, 1),
                         "load": round(self.load, 3), "ticks": self.ticks,
                     })
@@ -171,26 +242,15 @@ class Engine:
             raise
 
     # -- diffusion ---------------------------------------------------------
-    async def _broadcast(self, frames: list[bytes]) -> None:
-        dead = []
-        for ws in list(self.clients):
-            try:
-                for f in frames:
-                    await ws.send_bytes(f)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.clients.discard(ws)
+    def _broadcast(self, frames: list[bytes]) -> None:
+        for c in list(self.clients):
+            for f in frames:
+                c.push(f)
 
-    async def _broadcast_json(self, obj: dict) -> None:
-        dead = []
-        for ws in list(self.clients):
-            try:
-                await ws.send_text(json.dumps(obj))
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.clients.discard(ws)
+    def _broadcast_json(self, obj: dict) -> None:
+        txt = json.dumps(obj)
+        for c in list(self.clients):
+            c.push(txt)
 
     def status(self) -> dict:
         return {"running": self.running, "error": self.error, "ticks": self.ticks,
@@ -199,23 +259,33 @@ class Engine:
 
 
 engine = Engine()
-app = FastAPI(title="BlockSDR", version="0.1.0")
 
-# En dev, le front tourne sur le port 5173 (Vite) et l'API sur 8000 : sans CORS
-# le navigateur bloquerait les appels. En production tout passe par le même
-# proxy, donc la liste large ne sert que localement.
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-)
+# Pas de documentation interactive (/docs, /redoc, /openapi.json) : personne ne
+# s'en sert, et c'est autant de surface en moins. `debug` reste à False : une
+# erreur renvoie « Internal Server Error », jamais la pile d'appels.
+app = FastAPI(title="BlockSDR", version="0.2.0", debug=False,
+              docs_url=None, redoc_url=None, openapi_url=None)
+
+# En production tout passe par la même origine (Traefik) : CORS ne sert qu'à
+# REFUSER les autres. Liste fermée, pas d'étoile.
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
+                   allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+# En-tête Host vérifié : c'est précisément le vecteur de la CVE-2026-48710
+# (Starlette reconstruisait l'URL depuis un Host non validé). La mise à jour
+# de Starlette corrige la faille ; ce filtre la ferme une seconde fois.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+# Ajouté en dernier = exécuté en premier : taille, Origin, en-têtes.
+app.add_middleware(Guard)
 
 
-class GraphIn(BaseModel):
-    nodes: list[dict]
-    edges: list[dict]
-
-
-class RunIn(BaseModel):
-    running: bool
+@app.exception_handler(RequestValidationError)
+async def invalid_request(_req: Request, exc: RequestValidationError):
+    """422 SANS recopier la requête reçue (pydantic la renvoie par défaut)."""
+    errs = exc.errors()
+    first = errs[0] if errs else {}
+    where = ".".join(str(x) for x in first.get("loc", ()))
+    return JSONResponse(status_code=422, content={
+        "ok": False, "error": f"Requête invalide : {where} — {first.get('msg', '?')}"})
 
 
 @app.get("/api/health")
@@ -235,41 +305,60 @@ def get_graph():
 
 @app.post("/api/graph")
 async def post_graph(g: GraphIn):
-    spec = {"nodes": g.nodes, "edges": g.edges}
-    try:
-        engine.validate(spec)          # on refuse un graphe invalide sans rien casser
-    except GraphError as e:
-        return {"ok": False, "error": str(e), "status": engine.status()}
-    await engine.set_graph(spec)
+    spec = g.to_spec()
+    async with engine.lock:
+        try:
+            engine.validate(spec)          # on refuse un graphe invalide sans rien casser
+            await engine.set_graph(spec)   # peut encore échouer au redémarrage (dongle)
+        except GraphError as e:
+            return {"ok": False, "error": str(e), "status": engine.status()}
     return {"ok": True, "status": engine.status()}
 
 
 @app.post("/api/run")
 async def run(r: RunIn):
-    try:
-        if r.running:
-            await engine.start()
-        else:
-            await engine.stop()
-    except GraphError as e:
-        return {"ok": False, "error": str(e), "status": engine.status()}
+    async with engine.lock:
+        try:
+            if r.running:
+                await engine.start()
+            else:
+                await engine.stop()
+        except GraphError as e:
+            return {"ok": False, "error": str(e), "status": engine.status()}
     return {"ok": True, "status": engine.status()}
 
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    # Refus AVANT l'acceptation : le navigateur reçoit un 403 de poignée de main.
+    if not origin_ok(ws.headers.get("origin")) or len(engine.clients) >= MAX_WS_CLIENTS:
+        await ws.close(code=1008)
+        return
     await ws.accept()
-    engine.clients.add(ws)
     await ws.send_text(json.dumps({"type": "hello", "status": engine.status()}))
+    client = Client(ws)
+    engine.clients.add(client)
+    sender = asyncio.create_task(client.run())
+    window_t0, count = time.monotonic(), 0
     try:
+        # Le client ne parle pas : la réception sert de détecteur de coupure,
+        # et de garde-fou contre un client qui inonderait le serveur.
         while True:
-            await ws.receive_text()   # le client ne parle pas, ça sert de détecteur de coupure
-    except WebSocketDisconnect:
-        pass
-    except Exception:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            now = time.monotonic()
+            if now - window_t0 > 10.0:
+                window_t0, count = now, 0
+            count += 1
+            if count > WS_MSG_PER_10S:
+                await ws.close(code=1008)
+                break
+    except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
-        engine.clients.discard(ws)
+        engine.clients.discard(client)
+        sender.cancel()
 
 # ---------------------------------------------------------------------------
 #  Service des fichiers statiques (production)
@@ -282,21 +371,43 @@ async def ws_endpoint(ws: WebSocket):
 #  Ce bloc est enregistré EN DERNIER, volontairement : FastAPI teste les routes
 #  dans l'ordre de déclaration, et l'attrape-tout ci-dessous masquerait /api.
 # ---------------------------------------------------------------------------
-import os
-from fastapi.responses import FileResponse
-
 STATIC_DIR = os.environ.get("BLOCKSDR_STATIC") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 
+
+def static_files(root: str) -> dict[str, str]:
+    """Inventaire des fichiers servables : chemin d'URL -> chemin sur disque.
+
+    ⚠️ On ne construit JAMAIS un chemin disque à partir de l'URL. L'ancien
+    garde-fou (`normpath` puis `startswith(STATIC_DIR)`) laissait passer
+    `../static-autre/…` — « /app/static-autre » COMMENCE bien par
+    « /app/static ». Ici, l'URL n'est qu'une clé cherchée dans un
+    dictionnaire dressé au démarrage : ce qui n'y est pas n'existe pas. Le
+    front buildé est figé dans l'image, l'inventaire ne bouge donc jamais.
+    Les liens symboliques et les fichiers cachés sont ignorés.
+    """
+    found: dict[str, str] = {}
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if not x.startswith(".")
+                   and not os.path.islink(os.path.join(d, x))]
+        for f in files:
+            full = os.path.join(d, f)
+            if f.startswith(".") or os.path.islink(full):
+                continue
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            found[rel] = full
+    return found
+
+
 if os.path.isdir(STATIC_DIR):
+    _FILES = static_files(STATIC_DIR)
     _INDEX = os.path.join(STATIC_DIR, "index.html")
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):
         # Fichier réel demandé (assets/, favicon…) : on le sert tel quel.
-        target = os.path.normpath(os.path.join(STATIC_DIR, full_path))
-        # Garde-fou anti-remontée de chemin : rester dans STATIC_DIR.
-        if target.startswith(os.path.normpath(STATIC_DIR)) and os.path.isfile(target):
+        target = _FILES.get(full_path)
+        if target is not None:
             return FileResponse(target)
         # Sinon, route côté client (vite-plugin-pages) : on rend l'index et
         # c'est React Router qui décide.

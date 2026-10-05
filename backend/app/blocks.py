@@ -15,16 +15,16 @@ largeur de bande il représente — exactement comme GNU Radio propage son
 
 from __future__ import annotations
 
+import math
 import queue
-import threading
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import numpy as np
 
-from .dsp import (C64, F32, DcBlock, Decimator, Deemphasis, Fir,
-                  FmDiscriminator, Nco, lowpass_taps, spectrum_db)
+from . import rtl
+from .dsp import (C64, F32, DcBlock, Decimator, Deemphasis, FmDiscriminator,
+                  Nco, spectrum_db)
 
 
 @dataclass
@@ -49,10 +49,56 @@ def register(cls):
 
 
 def P(name, label, ptype, default, **kw) -> dict:
-    """Raccourci pour décrire un paramètre (le front en fait un champ)."""
+    """Raccourci pour décrire un paramètre (le front en fait un champ).
+
+    `min`/`max` sont montrés par le front (curseur). `bounds=(bas, haut)` est
+    une limite que SEUL le serveur applique : elle borne une valeur sans faire
+    apparaître de curseur dans le formulaire.
+    """
     d = {"name": name, "label": label, "type": ptype, "default": default}
     d.update(kw)
     return d
+
+
+class ParamError(ValueError):
+    """Valeur de paramètre refusée (type, bornes ou option inconnue)."""
+
+
+def check_param(block_label: str, d: dict, v: Any) -> Any:
+    """Vérifie UNE valeur envoyée par le client contre la déclaration `d`.
+
+    Rend la valeur normalisée (un 2048 reçu pour une option déclarée 2048 reste
+    un entier ; un « 30 » reste la chaîne attendue par le bloc), ou lève
+    `ParamError` avec un message lisible dans l'interface.
+    """
+    where = f"{block_label} · {d['label']}"
+    t = d["type"]
+    if t == "select":
+        for o in d["options"]:
+            if str(o["value"]) == str(v) and not isinstance(v, (dict, list)):
+                return o["value"]
+        raise ParamError(f"{where} : valeur « {str(v)[:40]} » non proposée")
+    if t == "bool":
+        if not isinstance(v, bool):
+            raise ParamError(f"{where} : vrai/faux attendu")
+        return v
+    if t not in ("int", "float", "freq"):
+        raise ParamError(f"{where} : type de paramètre inconnu")
+    # bool est un int en Python : on le refuse explicitement.
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ParamError(f"{where} : nombre attendu")
+    if not math.isfinite(v):
+        raise ParamError(f"{where} : nombre fini attendu")
+    if t == "int":
+        if v != int(v):
+            raise ParamError(f"{where} : nombre entier attendu")
+        v = int(v)
+    else:
+        v = float(v)
+    lo, hi = d.get("bounds", (d.get("min"), d.get("max")))
+    if (lo is not None and v < lo) or (hi is not None and v > hi):
+        raise ParamError(f"{where} : {v:g} hors limites ({lo} à {hi})")
+    return v
 
 
 class Block:
@@ -65,10 +111,16 @@ class Block:
     outputs: list[dict] = []
     params: list[dict] = []
 
-    def __init__(self, node_id: str, params: dict[str, Any]):
+    def __init__(self, node_id: str, params: dict[str, Any], hardware: bool = True):
         self.id = node_id
         self.p = {d["name"]: d["default"] for d in self.params}
-        self.p.update({k: v for k, v in (params or {}).items() if k in self.p})
+        # Les clés inconnues sont ignorées (comme avant) ; les connues sont
+        # VÉRIFIÉES : type, bornes, valeur parmi les options.
+        for d in self.params:
+            if d["name"] in (params or {}):
+                self.p[d["name"]] = check_param(self.label, d, params[d["name"]])
+        # `hardware=False` : on vérifie le graphe sans toucher au matériel.
+        self.hardware = hardware
         self.error: str | None = None
         self.setup()
 
@@ -120,8 +172,10 @@ class SimSource(Block):
     outputs = [{"name": "out", "dtype": "iq"}]
     params = [
         P("sample_rate", "Cadence d'échantillonnage", "float", 1_024_000.0, unit="éch/s",
+          bounds=(1_000, 10_000_000),
           help="Largeur de la fenêtre observée. Un RTL-SDR réel monte à 2 400 000."),
-        P("center_freq", "Fréquence centrale", "freq", 100_000_000.0, unit="Hz"),
+        P("center_freq", "Fréquence centrale", "freq", 100_000_000.0, unit="Hz",
+          bounds=(0, 6_000_000_000)),
         P("block_size", "Taille de bloc", "int", 16384, min=1024, max=262144,
           help="Nombre d'échantillons traités à chaque tour. Plus grand = moins "
                "de tours par seconde, donc moins de charge, mais plus de latence."),
@@ -167,16 +221,18 @@ class RtlSdrSource(Block):
     label = "RTL-SDR"
     category = "source"
     color = "amber"
-    doc = ("Le vrai dongle. Nécessite `pyrtlsdr` et un RTL-SDR accessible. "
-           "Tant qu'il n'y en a pas, le bloc signale l'erreur et le graphe "
-           "refuse de démarrer — c'est voulu, plutôt que de faire semblant.")
+    doc = ("Le vrai dongle, piloté directement par librtlsdr. Tant qu'il n'y en "
+           "a pas, le bloc signale l'erreur et le graphe refuse de démarrer — "
+           "c'est voulu, plutôt que de faire semblant.")
     outputs = [{"name": "out", "dtype": "iq"}]
     params = [
         P("sample_rate", "Cadence d'échantillonnage", "float", 2_400_000.0, unit="éch/s",
+          bounds=(225_001, 3_200_000),
           help="⭐ 2 400 000 et pas 2 048 000 : c'est la seule des deux qui se "
                "divise JUSTE vers 48 kHz (÷50, ou ÷10 puis ÷5). Avec 2 048 000 "
                "il faudrait un rééchantillonneur à rapport fractionnaire."),
         P("center_freq", "Fréquence centrale", "freq", 100_000_000.0, unit="Hz",
+          bounds=(24_000_000, 1_766_000_000),
           help="24 MHz à 1 766 MHz. Le dongle se réaccorde immédiatement."),
         P("gain", "Gain", "select", "auto", options=[{"value": "auto", "label": "auto"}] +
           [{"value": str(g), "label": f"{g} dB"} for g in (0, 9, 15, 20, 25, 30, 35, 40, 44, 49)]),
@@ -189,40 +245,38 @@ class RtlSdrSource(Block):
         P("device_index", "Index du périphérique", "int", 0, min=0, max=7),
     ]
 
+    # Point d'entrée remplaçable par les tests (une fausse librtlsdr).
+    open_dongle = staticmethod(rtl.Dongle)
+    QUEUE = 6              # blocs d'avance tolérés avant de jeter les plus anciens
+
     def setup(self):
-        self.sdr = None
-        self.q = None
-        self.stop = threading.Event()
-        self.lecteur = None
+        self.dongle = None
+        self.q: queue.Queue | None = None
         self.perdus = 0
-        try:
-            from rtlsdr import RtlSdr  # type: ignore
-        except Exception as e:  # pragma: no cover - dépend de l'environnement
-            self.error = (f"pyrtlsdr absent de l'image ({e}). "
-                          "Vérifie que requirements.txt le contient et que la CI a "
-                          "reconstruit l'image. En attendant : source simulée.")
+        # Anneau de blocs PRÉALLOUÉS, remplis par le fil USB. Allouer un bloc
+        # neuf à chaque tour (128 Kio, au-dessus du seuil où glibc passe par
+        # mmap) coûtait des appels système et des défauts de page : mesuré,
+        # +5 points de processeur « système » par rapport à pyrtlsdr. Taille :
+        # la file pleine, plus le bloc en cours de traitement, plus celui en
+        # cours de remplissage — aucun n'est réécrit tant qu'on s'en sert.
+        nb = 2 * int(self.p["block_size"])          # 2 octets (I, Q) par échantillon
+        self._ring = [np.empty(nb, dtype=np.uint8) for _ in range(self.QUEUE + 2)]
+        self._ri = 0           # bloc de l'anneau en cours de remplissage
+        self._fill = 0         # octets déjà écrits dans ce bloc
+        sr = float(self.p["sample_rate"])
+        if not any(lo <= sr <= hi for lo, hi in rtl.SAMPLE_RATE_RANGES):
+            self.error = ("cadence impossible pour le dongle : 225 001 à 300 000 "
+                          "ou 900 001 à 3 200 000 éch/s")
+            return
+        if not self.hardware:      # simple vérification du graphe
             return
         try:
-            self.sdr = RtlSdr(device_index=int(self.p["device_index"]))
-            self.sdr.sample_rate = float(self.p["sample_rate"])
-            self.sdr.center_freq = float(self.p["center_freq"])
-            self.sdr.freq_correction = int(self.p["ppm"]) or 1
-            g = self.p["gain"]
-            self.sdr.gain = "auto" if g == "auto" else float(g)
+            self.dongle = self.open_dongle(int(self.p["device_index"]))
+            self.dongle.configure(int(sr), int(self.p["center_freq"]),
+                                  int(self.p["ppm"]), self.p["gain"])
         except Exception as e:
-            msg = str(e)
-            # Les deux échecs qu'on rencontre vraiment, et leur remède.
-            if "usb_open" in msg or "No device" in msg.lower() or "-1" in msg:
-                self.error = ("Aucun dongle visible. Le conteneur reçoit-il "
-                              "/dev/bus/usb ? (bloc `devices` du docker-compose)")
-            elif "busy" in msg.lower() or "claim" in msg.lower() or "-6" in msg:
-                self.error = ("Dongle déjà pris. UN DONGLE = UN PROGRAMME : soit "
-                              "un autre conteneur l'utilise, soit le graphe "
-                              "précédent ne l'a pas rendu. Dans le doute, "
-                              "redémarrer le conteneur le libère.")
-            else:
-                self.error = f"Dongle inaccessible : {msg}"
-            self.sdr = None
+            self.error = rtl.describe_error(e)
+            self.close()
             return
 
         # ⚠️ La lecture USB tourne dans SON PROPRE FIL, et pas dans le tour de
@@ -232,85 +286,84 @@ class RtlSdrSource(Block):
         # des échantillons, EN SILENCE, et ça s'entend en craquements réguliers.
         # Avec un fil dédié, l'acquisition du bloc suivant se fait PENDANT le
         # traitement du précédent : les deux se recouvrent au lieu de s'ajouter.
-        self.q = queue.Queue(maxsize=6)
-        self.lecteur = threading.Thread(target=self._boucle_lecture, daemon=True)
-        self.lecteur.start()
+        self.q = queue.Queue(maxsize=self.QUEUE)
+        self.dongle.start(self._on_bytes)
 
-    def _boucle_lecture(self):
-        n = int(self.p["block_size"])
-        while not self.stop.is_set():
-            sdr = self.sdr
-            if sdr is None:      # fermé pendant qu'on tournait
-                break
+    def _on_bytes(self, chunk: bytes) -> None:
+        """Appelé par le fil USB : recoupe le flux en blocs de `block_size`.
+
+        Les tampons USB ont une taille fixe (64 Kio) sans rapport avec la
+        taille de bloc choisie dans l'interface : on recopie dans l'anneau, et
+        chaque bloc plein part dans la file.
+        """
+        src = np.frombuffer(chunk, dtype=np.uint8)
+        i = 0
+        while i < len(src):
+            buf = self._ring[self._ri]
+            k = min(len(buf) - self._fill, len(src) - i)
+            buf[self._fill:self._fill + k] = src[i:i + k]
+            self._fill += k
+            i += k
+            if self._fill == len(buf):
+                self._push(buf)
+                self._ri = (self._ri + 1) % len(self._ring)
+                self._fill = 0
+
+    def _push(self, raw: np.ndarray) -> None:
+        if self.q.full():
+            # File pleine = le traitement a décroché. On jette le PLUS ANCIEN
+            # plutôt que le plus récent : sur une écoute en direct, accumuler
+            # du retard est pire qu'un trou.
             try:
-                raw = sdr.read_bytes(2 * n)
-            except Exception:
-                break            # la fermeture fait échouer la lecture : c'est le signal
-            if self.q.full():
-                # File pleine = le traitement a décroché. On jette le PLUS ANCIEN
-                # plutôt que le plus récent : sur une écoute en direct, accumuler
-                # du retard est pire qu'un trou.
-                try:
-                    self.q.get_nowait()
-                    self.perdus += 1
-                except queue.Empty:
-                    pass
-            try:
-                self.q.put_nowait(raw)
-            except queue.Full:
+                self.q.get_nowait()
+                self.perdus += 1
+            except queue.Empty:
                 pass
+        try:
+            self.q.put_nowait(raw)
+        except queue.Full:
+            pass
 
     def work(self, ins, ctx):
-        if self.sdr is None:
+        if self.dongle is None or self.q is None:
             return {}
-        n = int(self.p["block_size"])
-
-        # ⚠️ On N'UTILISE PAS `read_samples()` de pyrtlsdr. Mesuré sur cette VM
-        # à 2,4 MS/s : la source SEULE saturait un cœur (100 %), la FFT
-        # n'ajoutant rien. En cause, sa conversion interne : elle alloue un
-        # tableau **complex128** (16 octets par échantillon, soit 38 Mo/s ici) et
-        # le remplit par deux affectations entrelacées, puis divise.
-        #
-        # Ici : une seule passe, et surtout la vue finale. Un tableau de float32
-        # de longueur 2N relu en complex64 donne exactement N complexes, la
-        # partie réelle prise sur les indices pairs et l'imaginaire sur les
-        # impairs — c'est précisément la disposition I/Q du dongle. Zéro copie
-        # pour cette étape, et deux fois moins de mémoire que complex128.
         try:
             raw = self.q.get(timeout=2.0)
         except queue.Empty:
             return {}
-        a = np.frombuffer(memoryview(raw), dtype=np.uint8).astype(np.float32)
-        a -= 127.5          # le dongle code sur 8 bits non signés, centré sur 127,5
-        a *= 1.0 / 127.5    # ramené dans [-1, 1]
-        x = a.view(C64)
-        return {"out": Signal(x, float(self.p["sample_rate"]), float(self.p["center_freq"]))}
+        return {"out": Signal(iq_from_u8(raw), float(self.p["sample_rate"]),
+                              float(self.p["center_freq"]))}
 
     def close(self):
-        """Rendre le dongle, dans le bon ordre.
+        """Rendre le dongle : annuler la lecture, attendre le fil, fermer.
 
-        ⚠️ Le piège vécu : lever le drapeau d'arrêt puis attendre le fil ne
-        suffit pas. Le fil est BLOQUÉ dans `read_bytes` et ne regardera le
-        drapeau qu'au retour de la lecture — s'il revient. On se retrouvait
-        alors avec un `join` qui expire, un fil vivant qui tient encore le
-        périphérique, et le graphe suivant qui échouait sur « dongle déjà pris
-        par un autre programme ». Message d'autant plus déroutant qu'il
-        accusait un autre logiciel alors que le coupable était le précédent
-        graphe de BlockSDR lui-même.
-
-        L'ordre correct : FERMER d'abord, ce qui fait échouer la lecture en
-        cours et libère le fil, PUIS l'attendre brièvement.
+        Tout l'ordre est dans `rtl.Dongle.close` ; ici on se contente de
+        l'appeler une fois.
         """
-        self.stop.set()
-        if self.sdr is not None:
-            try:
-                self.sdr.close()
-            except Exception:
-                pass
-            self.sdr = None
-        if self.lecteur is not None:
-            self.lecteur.join(timeout=1.0)
-            self.lecteur = None
+        d, self.dongle = self.dongle, None
+        if d is not None:
+            d.close()
+
+
+def iq_from_u8(raw) -> np.ndarray:
+    """Octets bruts du dongle -> échantillons complex64 dans [-1, 1].
+
+    ⚠️ On N'UTILISE PAS la conversion de pyrtlsdr (`read_samples()`, du temps où
+    on s'en servait). Mesuré sur cette VM à 2,4 MS/s : la source SEULE
+    saturait un cœur (100 %), la FFT n'ajoutant rien. Elle allouait un tableau
+    **complex128** (16 octets par échantillon, soit 38 Mo/s ici) rempli par deux
+    affectations entrelacées, puis divisé.
+
+    Ici : une seule passe, et surtout la vue finale. Un tableau de float32 de
+    longueur 2N relu en complex64 donne exactement N complexes, la partie
+    réelle prise sur les indices pairs et l'imaginaire sur les impairs — c'est
+    précisément la disposition I/Q du dongle. Zéro copie pour cette étape, et
+    deux fois moins de mémoire que complex128.
+    """
+    a = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+    a -= 127.5          # le dongle code sur 8 bits non signés, centré sur 127,5
+    a *= 1.0 / 127.5    # ramené dans [-1, 1]
+    return a.view(C64)
 
 
 # --------------------------------------------------------------------------
@@ -329,6 +382,7 @@ class FreqShift(Block):
     inputs = [{"name": "in", "dtype": "iq"}]
     outputs = [{"name": "out", "dtype": "iq"}]
     params = [P("offset_hz", "Décalage", "float", 0.0, unit="Hz",
+                bounds=(-10_000_000, 10_000_000),
                 help="Positif = on remonte la bande. La station qui était à "
                      "+120 kHz se retrouve au centre avec un décalage de 120 000.")]
 

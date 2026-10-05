@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from .blocks import REGISTRY, Block, Ctx, Signal
+from .blocks import REGISTRY, Block, Ctx, ParamError, Signal
 
 
 class GraphError(Exception):
@@ -40,12 +40,27 @@ DEFAULT_GRAPH: dict[str, Any] = {
 
 
 class Flowgraph:
-    def __init__(self, spec: dict[str, Any]):
+    """Un graphe construit et prêt à tourner.
+
+    `hardware=False` construit tout SAUF l'accès au matériel : c'est la
+    vérification d'un graphe, qui ne doit ni ouvrir ni bloquer le dongle (celui
+    du graphe en marche, justement, le tient).
+    """
+
+    def __init__(self, spec: dict[str, Any], hardware: bool = True):
         self.spec = spec
+        self.hardware = hardware
         self.blocks: dict[str, Block] = {}
         self.order: list[str] = []
         self.edges: list[dict] = list(spec.get("edges") or [])
-        self._build()
+        try:
+            self._build()
+        except GraphError:
+            # ⚠️ Un graphe refusé doit RENDRE ce que ses blocs ont déjà ouvert :
+            # une source RTL-SDR construite avant l'erreur garderait sinon le
+            # dongle, et le graphe suivant échouerait sur « dongle déjà pris ».
+            self.close()
+            raise
 
     # -- construction ------------------------------------------------------
     def _build(self) -> None:
@@ -57,8 +72,14 @@ class Flowgraph:
             t = n.get("type")
             cls = REGISTRY.get(t)
             if cls is None:
-                raise GraphError(f"Bloc inconnu : « {t} »")
-            self.blocks[n["id"]] = cls(n["id"], n.get("params") or {})
+                raise GraphError(f"Bloc inconnu : « {str(t)[:40]} »")
+            if n["id"] in self.blocks:
+                raise GraphError(f"Deux blocs portent le même identifiant : {n['id']}")
+            try:
+                self.blocks[n["id"]] = cls(n["id"], n.get("params") or {},
+                                           hardware=self.hardware)
+            except ParamError as e:
+                raise GraphError(str(e)) from None
 
         for e in self.edges:
             for side in ("from", "to"):
