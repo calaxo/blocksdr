@@ -8,9 +8,9 @@ Né d'une frustration : les WebSDR existants enferment l'utilisateur dans des
 « profils » de bande figés. Ici **rien n'est figé** — la fréquence est un
 paramètre comme un autre.
 
-> 🔧 **État : prototype qui tourne.** Source **simulée** (aucun matériel requis),
-> chaîne décimation → FFT → waterfall/spectre/oscilloscope, édition du graphe en
-> direct. **Pas d'audio pour l'instant**, c'est assumé : voir la feuille de route.
+> 🔧 **État : prototype qui tourne.** Source **simulée** (aucun matériel requis)
+> ou **vrai RTL-SDR**, chaîne décimation → FFT → waterfall/spectre/oscilloscope,
+> démodulation FM/AM et écoute dans le navigateur, édition du graphe en direct.
 
 ---
 
@@ -26,8 +26,19 @@ côté navigateur, donc **aucun souci de CORS ni de WebSocket**.
 Sans Docker, en deux terminaux :
 
 ```bash
-cd backend  && pip install -r requirements.txt && uvicorn app.main:app --reload
+cd backend  && pip install -r requirements-dev.txt && uvicorn app.main:app --reload
 cd frontend && npm install && npm run dev
+```
+
+⚠️ En local hors Docker, l'API n'accepte que les noms d'hôte et origines
+déclarés (voir [Sécurité](#sécurité)) : exporter
+`BLOCKSDR_ORIGINS=http://localhost:5180` avant de lancer uvicorn.
+
+Tests (validation des entrées, DSP, client du dongle contre une fausse
+librtlsdr) — ils tournent aussi en CI avant chaque construction d'image :
+
+```bash
+cd backend && python -m pytest -q
 ```
 
 Au premier lancement, un graphe d'exemple est déjà en place. **Appuie sur
@@ -107,7 +118,15 @@ Vrai dongle à **2 400 000 éch/s**, blocs de 65 536, FFT 2048 + waterfall :
 | Acquisition + FFT + waterfall | **6 %** | 36,6 |
 | **+ démodulation FM + audio** | **41 %** | **36,6**, taux temps réel **1,002** |
 
-⚠️ Il a fallu **ne pas utiliser `read_samples()` de pyrtlsdr** pour en arriver là :
+Remesuré le **2026-10-06** (`docker stats`, un client WebSocket branché, une station FM,
+gain auto), avant/après le durcissement : acquisition + FFT + waterfall **19 % →
+20 %**, avec FM + audio **66 % → 70 %** ; charge affichée (temps processeur du
+moteur seul, sans client) 0,59 → 0,62. Les chiffres du tableau ci-dessus ne se
+retrouvent plus, avec l'image d'avant non plus : c'est l'hôte qui a changé, pas
+le code.
+
+⚠️ Il a fallu **ne pas utiliser `read_samples()` de pyrtlsdr** (utilisé à
+l'époque) pour en arriver là :
 sa conversion interne saturait un cœur entier à elle seule (100 %, la FFT
 n'ajoutant rien). Elle alloue du **complex128** — 16 octets par échantillon,
 38 Mo/s à cette cadence — et le remplit par affectations entrelacées. La
@@ -122,7 +141,7 @@ décimation et la démodulation.
 | Bloc | Rôle |
 |---|---|
 | **Source simulée** | Fabrique un flux I/Q synthétique. 5 scènes : bande FM, deux porteuses, balayage, salves, bruit |
-| **RTL-SDR** | Le vrai dongle (`pyrtlsdr`). Signale proprement son absence au lieu de faire semblant |
+| **RTL-SDR** | Le vrai dongle, piloté en direct par librtlsdr (`app/rtl.py`). Signale proprement son absence au lieu de faire semblant |
 | **Décalage de fréquence** | Fait glisser le spectre pour amener une station au centre |
 | **Démodulateur FM** | I/Q → son. FM large (radio) ou étroite (talkies), avec désaccentuation |
 | **Démodulateur AM** | Pour l'aviation |
@@ -175,12 +194,29 @@ devient 8 fois plus étroit — on a échangé de la largeur de bande contre du 
   regroupement). Simple, prévisible — et c'est aussi ce que fait GNU Radio
   Companion quand on relance un flowgraph.
 
+## Sécurité
+
+Durcissement d'octobre 2026 (alerte KEV sur Starlette, CVE-2026-48710) :
+
+| Sujet | Ce qui est fait |
+|---|---|
+| **Dépendances** | `requirements.in` (dépendances directes, versions exactes) → `requirements.txt` **verrouillé avec empreintes sha256**, transitives comprises ; installé avec `pip --require-hashes --only-binary=:all:`. Vérifier : `pip-audit -r requirements.txt --no-deps --disable-pip` |
+| **Dongle** | Plus de pyrtlsdr ni de `setuptools<81` : `app/rtl.py`, une douzaine de fonctions de librtlsdr en `ctypes`, chargée par son nom système (jamais de chemin relatif). Arrêt par `rtlsdr_cancel_async`, le mécanisme prévu par librtlsdr |
+| **Entrées** | Structure du graphe vérifiée par pydantic (`app/schema.py` : identifiants, types, 64 blocs / 128 liaisons au plus) ; chaque paramètre contre sa déclaration (`check_param` : type, bornes, options). Tout paramètre numérique est borné, un test le garantit pour les futurs blocs |
+| **HTTP** | `Host` vérifié (`BLOCKSDR_HOSTS`), CORS fermé sur `BLOCKSDR_ORIGINS` (pas d'étoile), Origin refusée sur les POST étrangers, corps limité à 128 Kio, CSP et en-têtes de sécurité, pas de `/docs`, pas de pile d'appels renvoyée |
+| **WebSocket** | Origin vérifiée (CORS ne s'applique pas aux WebSocket), 8 clients au plus, messages entrants ≤ 4 Kio et ≤ 20 par 10 s, une file d'envoi par client : un client lent ne ralentit plus le moteur |
+| **Fichiers statiques** | Inventaire dressé au démarrage ; l'URL n'est qu'une clé de dictionnaire, jamais un morceau de chemin disque |
+| **Image** | Bases épinglées par digest, utilisateur 10001, healthcheck. Le compose (HomeCalLab) ajoute lecture seule, `cap_drop: ALL`, `no-new-privileges` |
+
+Variables d'environnement : `BLOCKSDR_ORIGINS` (défaut
+`https://blocksdr.example.org`), `BLOCKSDR_HOSTS` (défaut : ce nom,
+`localhost`, `127.0.0.1`).
+
 ## Feuille de route
 
 - [x] Moteur de graphe, catalogue, édition en direct, afficheurs
 - [x] Source simulée — développer sans matériel
-- [ ] **Brancher le vrai RTL-SDR** : décommenter `pyrtlsdr` et le passage USB
-      dans `docker-compose.yml`, échanger le bloc source. Le reste ne bouge pas
+- [x] **Brancher le vrai RTL-SDR** (passage USB dans le compose HomeCalLab)
 - [ ] Sauvegarde / chargement de graphes (`.json`), et quelques exemples fournis
 - [ ] Clic sur le waterfall pour poser le décalage de fréquence
 - [x] ⭐ **Audio** : démodulateurs **FM large / FM étroite / AM**, bloc **Écoute**,
