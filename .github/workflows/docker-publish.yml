@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Dépendances (verrouillées, empreintes vérifiées)
-        run: pip install --require-hashes --only-binary=:all: -r backend/requirements-dev.txt
+        run: "pip install --require-hashes --only-binary=:all: -r backend/requirements-dev.txt"
       - name: pytest
         working-directory: backend
         run: python -m pytest -q
