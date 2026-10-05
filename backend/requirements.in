@@ -1,0 +1,21 @@
+# Dépendances DIRECTES du backend, versions exactes.
+# Le fichier verrouillé (requirements.txt, avec les dépendances transitives et
+# leurs empreintes sha256) se régénère par :
+#
+#   uv pip compile requirements.in --generate-hashes --python-version 3.12 \
+#      --python-platform x86_64-manylinux_2_28 -o requirements.txt
+#
+# puis `pip-audit -r requirements.txt --no-deps --disable-pip` pour vérifier.
+fastapi==0.142.2
+# uvicorn SANS l'extra [standard] : il tirait watchfiles, python-dotenv, PyYAML,
+# uvloop et httptools, dont la production n'a aucun usage. Seul `websockets`
+# est indispensable (le flux /ws).
+uvicorn==0.54.0
+websockets==17.2
+pydantic==2.13.5
+# numpy reste sur la branche 2.2 (dernière : 2.2.6, aucune CVE connue) : mesuré
+# sur le vrai dongle, la 2.5.3 rend np.convolve (le filtre de la démodulation
+# FM) ~10 % plus lent, soit +5 points de processeur pour la même écoute.
+numpy==2.2.6
+# Plus de pyrtlsdr ni de setuptools : le dongle est piloté par app/rtl.py,
+# directement en ctypes vers la librtlsdr du système (paquet librtlsdr0).
