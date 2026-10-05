@@ -10,6 +10,7 @@ on:
   push:
     branches: [master, main]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 env:
@@ -17,7 +18,27 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/blocksdr   # -> ghcr.io/calaxo/blocksdr
 
 jobs:
+  # Tests du backend : validation des entrées, DSP, client du dongle (avec une
+  # fausse librtlsdr). L'image n'est construite que s'ils passent.
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dépendances (verrouillées, empreintes vérifiées)
+        run: pip install --require-hashes --only-binary=:all: -r backend/requirements-dev.txt
+      - name: pytest
+        working-directory: backend
+        run: python -m pytest -q
+
   build:
+    needs: tests
+    # Sur une pull request : tests seulement, rien n'est publié.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
