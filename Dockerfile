@@ -1,5 +1,5 @@
 # BlockSDR — image unique : front React buildé + backend Python, un seul port.
-# Même schéma que surfcast : node build le front, puis runtime python léger qui
+# Deux étages : node build le front, puis un runtime python léger qui
 # sert à la fois l'API, le WebSocket et les fichiers statiques.
 # Construite par la CI du repo (.github/workflows/docker-publish.yml)
 # -> ghcr.io/calaxo/blocksdr:latest
@@ -17,7 +17,7 @@ COPY frontend/ ./
 RUN npm run build          # -> /fe/dist
 
 # --- Étage 2 : runtime python ------------------------------------------------
-FROM python:3.12.15-slim-trixie@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d AS runtime
+FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime
 WORKDIR /app
 # PYTHONDONTWRITEBYTECODE : le système de fichiers est en LECTURE SEULE en
 # production ; le bytecode est compilé une fois pour toutes au build (plus bas).

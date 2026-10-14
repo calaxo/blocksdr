@@ -10,7 +10,9 @@ services:
     container_name: blocksdr-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # 127.0.0.1 : l'API n'a pas d'authentification, elle ne doit pas être
+      # joignable depuis le réseau local en développement.
+      - "127.0.0.1:8000:8000"
     volumes:
       # Rechargement à chaud du Python pendant l-écriture du projet.
       - ./backend/app:/app/app:ro
@@ -37,7 +39,7 @@ services:
       # Vu depuis le conteneur, le backend n-est pas sur localhost.
       API_TARGET: http://backend:8000
     ports:
-      - "5180:5180"
+      - "127.0.0.1:5180:5180"
     volumes:
       - ./frontend:/app
       # Volume anonyme : garde les node_modules installés dans l-image et
