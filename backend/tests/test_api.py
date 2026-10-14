@@ -21,6 +21,9 @@ for path, txt in [("static/index.html", "<html>index</html>"),
     with open(os.path.join(_TMP, path), "w") as f:
         f.write(txt)
 os.environ["BLOCKSDR_STATIC"] = _STATIC
+# Configuration d'un déploiement derrière un reverse proxy, comme en production.
+os.environ["BLOCKSDR_ORIGINS"] = "https://blocksdr.example.org"
+os.environ["BLOCKSDR_HOSTS"] = "blocksdr.example.org,localhost,127.0.0.1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402

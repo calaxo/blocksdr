@@ -3,9 +3,14 @@
 Ce que l'application accepte est réglé par deux variables d'environnement :
 
   - `BLOCKSDR_ORIGINS` : origines autorisées à appeler l'API et à ouvrir le
-    WebSocket (séparées par des virgules). Par défaut, l'adresse de production.
-  - `BLOCKSDR_HOSTS` : noms d'hôte acceptés dans l'en-tête Host. Par défaut le
-    nom de production, plus `localhost`/`127.0.0.1` pour le healthcheck.
+    WebSocket (séparées par des virgules). Par défaut, l'accès local
+    `http://localhost:8092` seulement.
+  - `BLOCKSDR_HOSTS` : noms d'hôte acceptés dans l'en-tête Host. Par défaut
+    `localhost` et `127.0.0.1` (le healthcheck en a besoin).
+
+Derrière un reverse proxy, les deux DOIVENT être réglées sur le nom public,
+par exemple `BLOCKSDR_ORIGINS=https://blocksdr.example.org` et
+`BLOCKSDR_HOSTS=blocksdr.example.org,localhost,127.0.0.1`.
 
 ⚠️ Le contrôle d'Origin du WebSocket n'est PAS redondant avec CORS : les
 navigateurs n'appliquent pas CORS aux WebSocket. Sans lui, n'importe quelle
@@ -16,16 +21,16 @@ from __future__ import annotations
 
 import os
 
-PROD_ORIGIN = "https://blocksdr.example.org"
+DEFAULT_ORIGINS = "http://localhost:8092,http://127.0.0.1:8092"
+DEFAULT_HOSTS = "localhost,127.0.0.1"
 
 
 def _env_list(name: str, default: str) -> list[str]:
     return [x.strip() for x in os.environ.get(name, default).split(",") if x.strip()]
 
 
-ALLOWED_ORIGINS = _env_list("BLOCKSDR_ORIGINS", PROD_ORIGIN)
-ALLOWED_HOSTS = _env_list("BLOCKSDR_HOSTS",
-                          "blocksdr.example.org,localhost,127.0.0.1")
+ALLOWED_ORIGINS = _env_list("BLOCKSDR_ORIGINS", DEFAULT_ORIGINS)
+ALLOWED_HOSTS = _env_list("BLOCKSDR_HOSTS", DEFAULT_HOSTS)
 
 # Un graphe complet tient en quelques dizaines de Kio : au-delà, ce n'est pas
 # le front qui parle.
