@@ -3,8 +3,6 @@ name: Build & push image
 # Build l'image BlockSDR (front React + backend Python) et la pousse sur
 # ghcr.io/calaxo/blocksdr. Le GITHUB_TOKEN du repo suffit pour publier sur ghcr
 # sous le même compte (packages: write).
-# Côté Komodo, la stack tire cette image avec registry_provider=ghcr.io et
-# registry_account=calaxo — mêmes identifiants que surfcast.
 
 on:
   push:
@@ -69,7 +67,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64          # l'hote de production est en amd64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -349,7 +349,7 @@ def iq_from_u8(raw) -> np.ndarray:
     """Octets bruts du dongle -> échantillons complex64 dans [-1, 1].
 
     ⚠️ On N'UTILISE PAS la conversion de pyrtlsdr (`read_samples()`, du temps où
-    on s'en servait). Mesuré sur cette VM à 2,4 MS/s : la source SEULE
+    on s'en servait). Mesuré sur la machine hôte à 2,4 MS/s : la source SEULE
     saturait un cœur (100 %), la FFT n'ajoutant rien. Elle allouait un tableau
     **complex128** (16 octets par échantillon, soit 38 Mo/s ici) rempli par deux
     affectations entrelacées, puis divisé.

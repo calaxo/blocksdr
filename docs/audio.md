@@ -157,7 +157,7 @@ devra passer de 16 384 à 65 536 pour l'audio.
 
 ## 5 bis. Le budget processeur est là, et il n'était pas gagné
 
-Mesuré sur la VM le 2026-08-24, dongle réel à 2,4 MS/s : **6 % d'un cœur** pour
+Mesuré sur la machine hôte le 2026-08-24, dongle réel à 2,4 MS/s : **6 % d'un cœur** pour
 l'acquisition + FFT + waterfall, 36 tours/s sur 36,6 théoriques.
 
 Mais avant correction, la **source seule** en consommait **100 %** — la faute à
@@ -174,7 +174,7 @@ de chose qu'on ne voit qu'en branchant le vrai matériel.
 | **Convertisseur 8 bits** | ~50 dB de dynamique seulement. Une station forte à côté écrase la faible | Régler le gain **à la main** plutôt qu'en auto, au plus petit qui fait sortir le signal |
 | **Pas de quartz compensé** | Dérive de quelques kHz. Inaudible en FM large (canal de 200 kHz), **rédhibitoire en NFM et en AM** : la station est désaccordée | Correction **PPM**, à mesurer une fois sur une station de fréquence connue |
 | **Échantillons perdus en rafale** | Si le lecteur est en retard, le pilote jette des échantillons **en silence** → craquements réguliers | ✅ Déjà traité : plus d'attente artificielle avec une source matérielle, et le tour de graphe tourne dans un exécuteur |
-| **Un dongle = un programme** | Impossible d'écouter ici pendant qu'openwebrx tient le dongle | Arrêter l'autre, ou acheter un 2ᵉ dongle (~15 €) |
+| **Un dongle = un programme** | Impossible d'écouter ici pendant qu'un autre programme (OpenWebRX, rtl_tcp…) tient le dongle | Arrêter l'autre, ou acheter un 2ᵉ dongle (~15 €) |
 
 Et une contrainte qui ne vient pas de la radio : **les navigateurs bloquent le
 son tant qu'il n'y a pas eu de geste de l'utilisateur.** L'`AudioContext` doit

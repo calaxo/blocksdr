@@ -46,36 +46,38 @@ Démarrer** : trois « stations » simulées apparaissent sur le waterfall.
 
 ## Production
 
-Le déploiement suit **exactement** le schéma de surfcast, pour ne pas inventer
-une deuxième façon de faire :
+Une seule image contient le front buildé et le backend, sur un seul port
+(8092). La CI (`.github/workflows/docker-publish.yml`) lance les tests puis
+publie `ghcr.io/calaxo/blocksdr` avec les tags `latest` et `sha-<commit>`.
 
+```yaml
+services:
+  blocksdr:
+    image: ghcr.io/calaxo/blocksdr:latest   # en production, épingler sha-xxxxxxx@sha256:…
+    restart: unless-stopped
+    user: "10001"
+    read_only: true
+    tmpfs: [/tmp:size=16m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      # OBLIGATOIRES derrière un reverse proxy : le nom public de l'appli.
+      - BLOCKSDR_ORIGINS=https://blocksdr.example.org
+      - BLOCKSDR_HOSTS=blocksdr.example.org,localhost,127.0.0.1
+    # Avec un vrai dongle : tout le bus USB, et le groupe propriétaire de ses
+    # nœuds sur l'hôte (root:root 0664 sans règle udev -> group_add "0" ;
+    # avec une règle udev GROUP="plugdev" -> group_add "46").
+    # devices: [/dev/bus/usb:/dev/bus/usb]
+    # group_add: ["0"]
+    # Pas de port publié : le reverse proxy (Traefik, Caddy…) joint le
+    # conteneur sur 8092. Le WebSocket /ws doit pouvoir rester ouvert
+    # longtemps (pas de délai de lecture court sur le proxy).
 ```
-push sur master ──► GitHub Actions ──► ghcr.io/calaxo/blocksdr:latest
-                                              │
-                          Komodo (stack « blocksdr », serveur local)
-                          tire l'image + le docker-compose.yml de HomeCalLab
-                                              │
-                                    Traefik local ──► https://blocksdr.example.org
-```
 
-| Pièce | Où | Détail |
-|---|---|---|
-| Image | `.github/workflows/docker-publish.yml` | Un seul conteneur : front buildé + backend. Tags `latest` et sha court. Le `GITHUB_TOKEN` du dépôt suffit pour publier sur ghcr |
-| Déploiement | `HomeCalLab/stacks/blocksdr/docker-compose.yml` | Le dépôt applicatif est séparé du dépôt de déploiement |
-| Identifiants | Komodo | `registry_provider = ghcr.io`, `registry_account = calaxo` — le paquet ghcr est **privé**, sans ça le `pull` renvoie « denied » |
-
-**Mettre à jour la production** : pousser sur `master`, attendre la CI, puis
-*Deploy* sur la stack Komodo (`auto_pull` est actif, l'image est retirée à
-chaque déploiement). Pas de redéploiement automatique sur push — c'est la
-convention du homelab.
-
-⚠️ **Un dongle = un programme** — mais la nuance compte : **openwebrx ne tient le
-dongle que pendant qu'un auditeur est connecté** (il démarre sa source à la
-demande et l'arrête avec le dernier client). Les deux stacks peuvent donc
-cohabiter ; c'est **premier arrivé, premier servi** au moment de l'écoute.
-Vérifié le 2026-08-24 : blocksdr a ouvert le dongle sans rien arrêter, parce que
-personne n'écoutait sur openwebrx. Si les deux le veulent en même temps, le
-second échoue avec « déjà pris par un autre programme ».
+⚠️ **Un dongle = un programme** : si OpenWebRX, rtl_tcp ou un autre logiciel
+tient déjà le dongle, le bloc RTL-SDR affiche « déjà pris par un autre
+programme ». Après un débranchement du dongle, redémarrer le conteneur (le
+nœud USB change de numéro).
 
 ## Ce qu'on voit à l'écran
 
@@ -108,7 +110,7 @@ dessinent eux-mêmes dans leur canvas ; React ne gère que ce qui change raremen
 Un `setState` par trame, à 25 images/s et par afficheur, suffirait à faire ramer
 le navigateur.
 
-## Ce que ça coûte (mesuré sur la VM, 2026-08-24)
+## Ce que ça coûte (mesuré sur un petit serveur, 2026-08-24)
 
 Vrai dongle à **2 400 000 éch/s**, blocs de 65 536, FFT 2048 + waterfall :
 
@@ -206,17 +208,25 @@ Durcissement d'octobre 2026 (alerte KEV sur Starlette, CVE-2026-48710) :
 | **HTTP** | `Host` vérifié (`BLOCKSDR_HOSTS`), CORS fermé sur `BLOCKSDR_ORIGINS` (pas d'étoile), Origin refusée sur les POST étrangers, corps limité à 128 Kio, CSP et en-têtes de sécurité, pas de `/docs`, pas de pile d'appels renvoyée |
 | **WebSocket** | Origin vérifiée (CORS ne s'applique pas aux WebSocket), 8 clients au plus, messages entrants ≤ 4 Kio et ≤ 20 par 10 s, une file d'envoi par client : un client lent ne ralentit plus le moteur |
 | **Fichiers statiques** | Inventaire dressé au démarrage ; l'URL n'est qu'une clé de dictionnaire, jamais un morceau de chemin disque |
-| **Image** | Bases épinglées par digest, utilisateur 10001, healthcheck. Le compose (HomeCalLab) ajoute lecture seule, `cap_drop: ALL`, `no-new-privileges` |
+| **Image** | Bases épinglées par digest, utilisateur 10001, healthcheck. Le compose de production (ci-dessus) ajoute lecture seule, `cap_drop: ALL`, `no-new-privileges` |
 
 Variables d'environnement : `BLOCKSDR_ORIGINS` (défaut
-`https://blocksdr.example.org`), `BLOCKSDR_HOSTS` (défaut : ce nom,
-`localhost`, `127.0.0.1`).
+`http://localhost:8092,http://127.0.0.1:8092`), `BLOCKSDR_HOSTS` (défaut :
+`localhost,127.0.0.1`). Derrière un reverse proxy, les régler sur le nom public.
+
+⚠️ **Pas d'authentification.** Quiconque joint l'interface peut changer le
+graphe, donc la fréquence écoutée, et le flux est diffusé à tous les clients.
+BlockSDR est fait pour un réseau local ou derrière un reverse proxy qui
+authentifie (forward auth, VPN…) : **ne pas l'exposer tel quel sur Internet.**
+
+Signaler une faille : ouvrir un *security advisory* privé sur le dépôt GitHub
+(onglet *Security*), plutôt qu'une issue publique.
 
 ## Feuille de route
 
 - [x] Moteur de graphe, catalogue, édition en direct, afficheurs
 - [x] Source simulée — développer sans matériel
-- [x] **Brancher le vrai RTL-SDR** (passage USB dans le compose HomeCalLab)
+- [x] **Brancher le vrai RTL-SDR** (passage USB `/dev/bus/usb` dans le conteneur)
 - [ ] Sauvegarde / chargement de graphes (`.json`), et quelques exemples fournis
 - [ ] Clic sur le waterfall pour poser le décalage de fréquence
 - [x] ⭐ **Audio** : démodulateurs **FM large / FM étroite / AM**, bloc **Écoute**,
@@ -226,5 +236,7 @@ Variables d'environnement : `BLOCKSDR_ORIGINS` (défaut
 - [ ] Stéréo FM (pilote 19 kHz), RDS, Opus pour l'écoute à distance
 - [ ] Décodeurs (ADS-B, capteurs 433/868) en blocs
 
-Étude de faisabilité et comparaison avec l'existant :
-`labo-electronique/websdr-maison/README.md`.
+## Licence
+
+[MIT](LICENSE) © 2026 calaxo — réutilisation libre, y compris commerciale, à
+condition de conserver la mention de copyright et la licence.
